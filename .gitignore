@@ -25,6 +25,3 @@ env/
 Thumbs.db
 .DS_Store
 
-# Project docs (not tracked)
-TECH_STACK.md
-AI_CONTEXT.md
