@@ -10,149 +10,265 @@ st.title("📋 Input Data — Faculty & Subject Allocation")
 
 st.markdown(
     """
-    Upload an **Excel file** (`.xlsx`) containing faculty names and their allocated subjects.
+    Upload an **Excel file** (`.xlsx`) containing faculty-subject allotment
+    for a semester (Odd or Even).
 
     ### Expected Format
 
-    | Faculty Name | Subject |
-    |---|---|
-    | Dr. Sharma | Data Structures |
-    | Dr. Sharma | Algorithms |
-    | Prof. Mehta | Database Systems |
-    | Prof. Mehta | Operating Systems |
-    | Dr. Patel | Computer Networks |
+    The Excel file should have the following structure:
 
-    - Each row maps **one faculty** to **one subject**.
-    - A faculty member can appear in multiple rows if they teach multiple subjects.
+    | Sl. No. | Name of Faculty | Designation | *ODD/EVEN SEMESTER (merged)* | | | | |
+    |---|---|---|---|---|---|---|---|
+    | | | | Subject 1 | Subject 2 | Subject 3 | Lab 1 | Lab 2 |
+    | 1 | Dr. Sharma | Professor | Data Structures | Algorithms | | Networks Lab | |
+    | 2 | Prof. Mehta | Assoc Prof | DBMS | OS | Compilers | | |
+
+    > Decorative rows (logos, title, etc.) above the header are automatically skipped.
     """
 )
 
 st.divider()
 
+# ---------------------------------------------------------------------------
+# Semester selection
+# ---------------------------------------------------------------------------
+semester = st.radio("Which semester is this file for?", ["Odd", "Even"], horizontal=True)
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Excel parser
 # ---------------------------------------------------------------------------
-def parse_excel(file_bytes):
-    """Parse the uploaded Excel file using openpyxl.
-    Returns (rows, error) where rows is a list of (faculty, subject) tuples.
+
+def find_header_row(ws):
+    """Scan rows to find the one containing 'Sl' or 'SI' in any cell
+    (case-insensitive). Returns the 1-based row number, or None."""
+    for row_idx in range(1, min(ws.max_row + 1, 100)):
+        for cell in ws[row_idx]:
+            val = str(cell.value).strip().lower() if cell.value else ""
+            if "sl" in val and "no" in val:
+                return row_idx
+            if "si" in val and "no" in val:
+                return row_idx
+            if val in ("sl. no.", "si. no.", "sl.no.", "si.no.", "s.no.",
+                       "sl. no", "si. no", "sl", "si", "s.no"):
+                return row_idx
+    return None
+
+
+def parse_faculty_excel(file_bytes):
+    """Parse the uploaded Excel file and return (records, debug_info, error).
+
+    Each record is a dict:
+      { "sl_no": int, "name": str, "designation": str,
+        "subjects": [str, ...], "labs": [str, ...] }
     """
+    debug = {}
+
     try:
-        wb = load_workbook(filename=BytesIO(file_bytes), read_only=True)
+        # NOTE: read_only=False is required to correctly read merged cells
+        wb = load_workbook(filename=BytesIO(file_bytes), data_only=True)
         ws = wb.active
     except Exception as e:
-        return None, f"Failed to read the Excel file: {e}"
+        return None, debug, f"Failed to read the Excel file: {e}"
 
-    headers = [str(cell.value).strip() if cell.value else "" for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+    debug["sheet_name"] = ws.title
+    debug["total_rows"] = ws.max_row
+    debug["total_cols"] = ws.max_column
 
-    # Find required columns (case-insensitive)
-    header_lower = [h.lower() for h in headers]
-    faculty_idx = None
-    subject_idx = None
-    for i, h in enumerate(header_lower):
-        if "faculty" in h:
-            faculty_idx = i
-        if "subject" in h:
-            subject_idx = i
-
-    if faculty_idx is None or subject_idx is None:
-        return None, (
-            f"Missing required column(s). Need **Faculty Name** and **Subject**. "
-            f"Found columns: {', '.join(headers)}"
+    header_row = find_header_row(ws)
+    if header_row is None:
+        return None, debug, (
+            "Could not find the header row (looking for a cell containing "
+            "'Sl. No.' or similar). Please check the file format."
         )
 
-    rows = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        faculty = str(row[faculty_idx]).strip() if row[faculty_idx] else ""
-        subject = str(row[subject_idx]).strip() if row[subject_idx] else ""
-        if faculty and subject:
-            rows.append((faculty, subject))
+    debug["header_row"] = header_row
+
+    # Read what's in the header row for debugging
+    header_cells = []
+    for cell in ws[header_row]:
+        header_cells.append(f"Col{cell.column}: {repr(cell.value)}")
+    debug["header_cells"] = header_cells
+
+    # Scan rows around the header to find the Subject and Lab columns
+    # In some merged formats, they are *above* or *in* the Sl.No row, 
+    # instead of strictly below. We'll scan rows 1 to header_row + 2.
+    subject_cols = []
+    lab_cols = []
+    
+    # The actual "Subject 1", "Lab 1" headers might be on row 57 or elsewhere.
+    # We scan all rows from 1 to 100 to confidently locate those columns.
+    scan_end = min(ws.max_row, 100)
+    for r in range(1, scan_end + 1):
+        for cell in ws[r]:
+            col_idx = cell.column - 1
+            # Skip the first 3 columns (Sl.No, Name, Designation)
+            if col_idx < 3:
+                continue
+                
+            val = str(cell.value).strip().lower() if cell.value else ""
+            if "subject" in val and col_idx not in subject_cols:
+                subject_cols.append(col_idx)
+            elif "lab" in val and col_idx not in lab_cols:
+                lab_cols.append(col_idx)
+
+    debug["subject_cols"] = subject_cols
+    debug["lab_cols"] = lab_cols
+
+    if not subject_cols and not lab_cols:
+        return None, debug, (
+            f"Could not find Subject / Lab columns anywhere in rows 1 to {scan_end}. "
+            "Expected cells containing the word 'Subject' or 'Lab'."
+        )
+
+    # Data rows start immediately after the header row (from the debug info provided, 
+    # row 11 is the first data row, right after the header on row 10).
+    data_start = header_row + 1
+    records = []
+
+    for row in ws.iter_rows(min_row=data_start, values_only=True):
+        # Skip completely empty rows
+        if not any(cell for cell in row):
+            continue
+
+        # Column indices: 0 = Sl.No., 1 = Name, 2 = Designation
+        # Only process rows where we have a valid Sl. No (usually an integer) and Name
+        sl_no_raw = row[0] if len(row) > 0 else None
+        name_raw = str(row[1]).strip() if len(row) > 1 and row[1] else ""
+        designation = str(row[2]).strip() if len(row) > 2 and row[2] else ""
+
+        # A valid faculty row must have a non-empty name, and typically a numeric/valid Sl. No.
+        if not name_raw or name_raw.lower() in ("none", "", "name of faculty"):
+            continue
+
+        # Collect subjects and labs (skip empty cells)
+        subjects = []
+        for col_idx in subject_cols:
+            if col_idx < len(row) and row[col_idx]:
+                val = str(row[col_idx]).strip()
+                if val and val.lower() != "none" and val != name_raw:
+                    subjects.append(val)
+
+        labs = []
+        for col_idx in lab_cols:
+            if col_idx < len(row) and row[col_idx]:
+                val = str(row[col_idx]).strip()
+                if val and val.lower() != "none" and val != name_raw:
+                    labs.append(val)
+
+        records.append({
+            "sl_no": sl_no_raw,
+            "name": name_raw,
+            "designation": designation,
+            "subjects": subjects,
+            "labs": labs,
+        })
 
     wb.close()
-    return rows, None
+
+    if not records:
+        return None, debug, "No faculty data rows found after the header. Is the file empty?"
+
+    return records, debug, None
 
 
 # ---------------------------------------------------------------------------
-# Excel Upload
+# File upload
 # ---------------------------------------------------------------------------
 uploaded_file = st.file_uploader(
     "Upload Faculty-Subject Excel File",
     type=["xlsx"],
-    help="Upload a .xlsx file with columns: Faculty Name, Subject",
+    help="Upload a .xlsx file with the format described above.",
 )
 
 if uploaded_file is not None:
-    rows, error = parse_excel(uploaded_file.read())
+    records, debug, error = parse_faculty_excel(uploaded_file.read())
 
     if error:
         st.error(error)
+        with st.expander("🛠️ Parser Debug Info (Expand to view why it failed)"):
+            st.json(debug)
         st.stop()
 
-    st.success(f"✅ File read successfully — **{len(rows)} record(s)** found.")
+    st.success(f"✅ Parsed **{len(records)} faculty record(s)** from the file.")
 
-    # --- Preview ----------------------------------------------------------
+    # --- Preview table ----------------------------------------------------
     st.subheader("Preview")
 
-    preview_cols = st.columns([1, 1])
-    with preview_cols[0]:
-        st.markdown("**Faculty Name**")
-    with preview_cols[1]:
-        st.markdown("**Subject**")
+    # Build a table-like display
+    header_cols = st.columns([0.5, 2, 1.5, 3, 2])
+    header_cols[0].markdown("**Sl.**")
+    header_cols[1].markdown("**Faculty Name**")
+    header_cols[2].markdown("**Designation**")
+    header_cols[3].markdown("**Subjects**")
+    header_cols[4].markdown("**Labs**")
 
-    for faculty, subject in rows:
-        with preview_cols[0]:
-            st.text(faculty)
-        with preview_cols[1]:
-            st.text(subject)
+    for rec in records:
+        cols = st.columns([0.5, 2, 1.5, 3, 2])
+        cols[0].write(rec["sl_no"] if rec["sl_no"] else "—")
+        cols[1].write(rec["name"])
+        cols[2].write(rec["designation"])
+        cols[3].write(", ".join(rec["subjects"]) if rec["subjects"] else "—")
+        cols[4].write(", ".join(rec["labs"]) if rec["labs"] else "—")
 
     # --- Summary ----------------------------------------------------------
     st.subheader("Summary")
-
-    # Group subjects by faculty
-    faculty_map = defaultdict(list)
-    for faculty, subject in rows:
-        if subject not in faculty_map[faculty]:
-            faculty_map[faculty].append(subject)
-
     all_subjects = set()
-    for faculty, subject in rows:
-        all_subjects.add(subject)
+    all_labs = set()
+    for rec in records:
+        all_subjects.update(rec["subjects"])
+        all_labs.update(rec["labs"])
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Faculty", len(faculty_map))
+        st.metric("Faculty", len(records))
     with col2:
-        st.metric("Total Subjects", len(all_subjects))
-
-    st.markdown("#### Faculty → Subjects Mapping")
-    for faculty, subjects in sorted(faculty_map.items()):
-        st.markdown(f"- **{faculty}**: {', '.join(subjects)}")
+        st.metric("Unique Subjects", len(all_subjects))
+    with col3:
+        st.metric("Unique Labs", len(all_labs))
 
     # --- Save to MongoDB --------------------------------------------------
     st.divider()
     if st.button("💾 Save to Database", type="primary"):
         db = get_db()
-        faculty_col = db["faculty"]
+        collection_name = f"faculty_{semester.lower()}"
+        col = db[collection_name]
 
-        docs = [
-            {"name": faculty, "subjects": subjects}
-            for faculty, subjects in sorted(faculty_map.items())
-        ]
+        docs = []
+        for rec in records:
+            docs.append({
+                "sl_no": rec["sl_no"],
+                "name": rec["name"],
+                "designation": rec["designation"],
+                "subjects": rec["subjects"],
+                "labs": rec["labs"],
+                "semester": semester.lower(),
+            })
 
-        # Replace existing data (fresh import each time)
-        faculty_col.delete_many({})
+        # Replace existing data for this semester
+        col.delete_many({})
         if docs:
-            faculty_col.insert_many(docs)
+            col.insert_many(docs)
 
-        st.success(f"✅ Saved **{len(docs)} faculty member(s)** to the database!")
+        st.success(
+            f"✅ Saved **{len(docs)} faculty member(s)** to `{collection_name}` collection!"
+        )
 
-    # --- Show current DB state --------------------------------------------
+    # --- Current DB records -----------------------------------------------
     st.divider()
     st.subheader("Current Database Records")
     db = get_db()
-    existing = list(db["faculty"].find({}, {"_id": 0}))
+    collection_name = f"faculty_{semester.lower()}"
+    existing = list(db[collection_name].find({}, {"_id": 0}))
     if existing:
         for doc in existing:
-            st.markdown(f"- **{doc['name']}**: {', '.join(doc.get('subjects', []))}")
+            subj_str = ", ".join(doc.get("subjects", []))
+            lab_str = ", ".join(doc.get("labs", []))
+            st.markdown(
+                f"- **{doc['name']}** ({doc.get('designation', '')}) — "
+                f"Subjects: {subj_str or '—'} | Labs: {lab_str or '—'}"
+            )
     else:
-        st.info("No faculty records in the database yet. Upload a file and click **Save to Database**.")
+        st.info(
+            f"No faculty records for **{semester}** semester yet. "
+            "Upload a file and click **Save to Database**."
+        )
