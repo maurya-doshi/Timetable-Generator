@@ -31,6 +31,19 @@ Timetable-Generator/
 └── requirements.txt
 ```
 
+## Implementation Status
+
+**Currently Built:**
+- Project scaffolding (`app.py`, `db.py`, `config.py`, `requirements.txt`).
+- **Page 1 (Input Data):** Streamlit UI to upload Excel files for faculty/subject assignments.
+- Custom Excel parsing logic to handle merged headers, automatically locating "Subject" and "Lab" columns scanning up to row 100 and skipping Sl. No/Name columns.
+- MongoDB integration saving uploaded faculty to `faculty_odd` and `faculty_even` collections.
+
+**Pending Features:**
+- **Page 2 (Constraints):** UI to define system-wide and teacher-specific constraints.
+- **Page 3 (Generate):** The actual CP-SAT / `python-constraint` solver logic.
+- **Page 4 (Export):** Producing the final PDF and Excel timetable matrices.
+
 ## Key Concepts
 
 ### Hard Constraints (must never be violated)
