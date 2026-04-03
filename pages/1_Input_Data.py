@@ -1,7 +1,6 @@
 import streamlit as st
 from openpyxl import load_workbook
 from io import BytesIO
-from collections import defaultdict
 from db import get_db
 
 st.set_page_config(page_title="Input Data", page_icon="📋", layout="wide")
@@ -235,32 +234,63 @@ if uploaded_file is not None:
     with col3:
         st.metric("Unique Labs", len(all_labs))
 
-    # --- Save to MongoDB --------------------------------------------------
+    # --- Save and Delete Buttons ------------------------------------------
     st.divider()
-    if st.button("💾 Save to Database", type="primary"):
-        db = get_db()
-        collection_name = f"faculty_{semester.lower()}"
-        col = db[collection_name]
+    col_save, col_delete = st.columns(2)
 
-        docs = []
-        for rec in records:
-            docs.append({
-                "sl_no": rec["sl_no"],
-                "name": rec["name"],
-                "designation": rec["designation"],
-                "subjects": rec["subjects"],
-                "labs": rec["labs"],
-                "semester": semester.lower(),        # overall semester (odd/even)
-            })
+    with col_save:
+        if st.button("💾 Save to Database", type="primary", use_container_width=True):
+            db = get_db()
+            collection_name = f"faculty_{semester.lower()}"
+            col = db[collection_name]
 
-        # Replace existing data for this semester
-        col.delete_many({})
-        if docs:
-            col.insert_many(docs)
+            docs = []
+            for rec in records:
+                docs.append({
+                    "sl_no": rec["sl_no"],
+                    "name": rec["name"],
+                    "designation": rec["designation"],
+                    "subjects": rec["subjects"],
+                    "labs": rec["labs"],
+                    "semester": semester.lower(),
+                })
 
-        st.success(
-            f"✅ Saved **{len(docs)} faculty member(s)** to `{collection_name}` collection!"
-        )
+            # Replace existing data for this semester
+            col.delete_many({})
+            if docs:
+                col.insert_many(docs)
+
+            st.success(
+                f"✅ Saved **{len(docs)} faculty member(s)** to `{collection_name}` collection!"
+            )
+            st.rerun()
+
+    with col_delete:
+        # Initialize session state for confirmation if not present
+        if "confirm_delete" not in st.session_state:
+            st.session_state.confirm_delete = False
+
+        delete_clicked = st.button("🗑️ Delete All Records", type="secondary", use_container_width=True)
+
+        if delete_clicked:
+            st.session_state.confirm_delete = True
+
+        if st.session_state.confirm_delete:
+            st.warning(f"⚠️ Are you sure you want to delete **ALL** faculty records for **{semester}** semester? This cannot be undone.")
+            confirm_col1, confirm_col2 = st.columns(2)
+            with confirm_col1:
+                if st.button("Yes, delete", type="primary"):
+                    db = get_db()
+                    collection_name = f"faculty_{semester.lower()}"
+                    result = db[collection_name].delete_many({})
+                    st.success(f"🗑️ Deleted {result.deleted_count} records from `{collection_name}`.")
+                    # Clear confirmation flag and rerun to update the UI
+                    st.session_state.confirm_delete = False
+                    st.rerun()
+            with confirm_col2:
+                if st.button("Cancel"):
+                    st.session_state.confirm_delete = False
+                    st.rerun()
 
     # --- Current DB records -----------------------------------------------
     st.divider()
