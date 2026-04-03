@@ -55,17 +55,20 @@ A **constraint-based timetable generator** that automatically schedules classes,
 
 ```
 Timetable-Generator/
-├── app.py                   # Streamlit entry point & landing page
+├── app.py                   # Streamlit entry point & UI
 ├── pages/
-│   └── 1_Input_Data.py      # Faculty & course data upload via Excel
-├── db.py                    # PyMongo connection (cached MongoClient)
-├── config.py                # Loads MONGO_URI & DB_NAME from .env
+│   ├── 1_Input_Data.py      # Teachers, subjects, rooms, sections
+│   ├── 2_Constraints.py     # Define hard & soft constraints
+│   ├── 3_Generate.py        # Run solver & view results
+│   └── 4_Export.py           # Download as PDF / Excel
+├── engine/
+│   ├── solver.py            # OR-Tools CP-SAT model builder
+│   └── constraints.py       # Constraint definitions
+├── db.py                    # PyMongo connection & helpers
+├── models.py                # Data schemas (dataclasses)
+├── config.py                # App settings & DB URI
 ├── requirements.txt         # Python dependencies
-├── Template.xlsx            # Blank Excel template for users
-├── Test.xlsx                # Sample test data (31 faculty, 24 courses)
-├── AI_CONTEXT.md            # AI assistant context
-├── TECH_STACK.md            # This file
-└── README.md                # Project README
+└── TECH_STACK.md
 ```
 
 ---
@@ -76,10 +79,10 @@ Timetable-Generator/
 |---|---|
 | `streamlit` | UI framework |
 | `pymongo` | MongoDB driver |
-| `openpyxl` | Excel parsing & export |
+| `ortools` | Google OR-Tools (CP-SAT solver) |
+| `openpyxl` | Excel export |
+| `reportlab` | PDF export |
 | `python-dotenv` | Environment variable management |
-| `python-constraint` | Constraint satisfaction solver |
-| `reportlab` | PDF export (for future use) |
 
 ---
 
