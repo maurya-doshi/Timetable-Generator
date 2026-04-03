@@ -57,10 +57,10 @@ A **constraint-based timetable generator** that automatically schedules classes,
 Timetable-Generator/
 ├── app.py                   # Streamlit entry point & UI
 ├── pages/
-│   ├── 1_Input_Data.py      # Teachers, subjects, rooms, sections
-│   ├── 2_Constraints.py     # Define hard & soft constraints
+│   ├── 1_Input_Data.py      # Dual-sheet single-file parser
+│   ├── 2_Constraints.py     # Define hard & soft constraints + DB mocks
 │   ├── 3_Generate.py        # Run solver & view results
-│   └── 4_Export.py           # Download as PDF / Excel
+│   └── 4_Export.py           # Download as Excel PDF
 ├── engine/
 │   ├── solver.py            # OR-Tools CP-SAT model builder
 │   └── constraints.py       # Constraint definitions
