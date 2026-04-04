@@ -7,17 +7,15 @@ st.set_page_config(page_title="Constraints Builder", page_icon="⚙️", layout=
 st.title("⚙️ Constraints Builder")
 st.markdown("Configure special scheduling rules and tag specific subjects to trigger hardcoded constraints.")
 
-# Connect to database with a short timeout for the UI
+# Connect to database
 db = get_db()
 db.client.get_io_loop = db.client.get_io_loop if hasattr(db.client, 'get_io_loop') else None
 
 try:
-    # Quick ping to check if mongo is reachable
     db.client.admin.command('ping')
     courses_cursor = db["courses"].find({}, {"_id": 0})
     courses = list(courses_cursor)
 except Exception:
-    # Use dummy data if DB is offline for testing the UI
     courses = [
         {"course_code": "CS301", "course_name": "Data Structures"},
         {"course_code": "CS304", "course_name": "AEC - EVS"},
@@ -25,8 +23,6 @@ except Exception:
         {"course_code": "OE101", "course_name": "Open Elective - AI Base"},
     ]
 
-# Extract course names for selection
-# We default to an empty list, ready for when the parser is done
 course_names = [c.get("course_name", c.get("course_code", "Unknown")) for c in courses]
 
 if not course_names:
@@ -40,7 +36,7 @@ try:
 except Exception:
     pass
 
-# Handle defaults safely if they aren't loaded yet
+# Handle defaults
 default_oe = current_config.get("open_electives", [])
 default_oe = [x for x in default_oe if x in course_names]
 
@@ -88,11 +84,8 @@ col3, col4 = st.columns(2)
 
 with col3:
     st.subheader("Shared Core Course")
-    
-    # Needs a combined list with "None"
     core_options = ["None"] + course_names
     core_index = core_options.index(default_pg_core) if default_pg_core in core_options else 0
-    
     shared_core = st.selectbox(
         "Select Core Course", 
         options=core_options, 
@@ -119,10 +112,8 @@ Use the grid below to **lock exactly when and where Maths happens**.
 Add a row for each Maths slot needed across your classes.
 """)
 
-# Define classes & slots for dropdowns
 all_classes = [
-    "3A", "3B", "3C", "3D", "5A", "5B", "5C", "5D", "7A", "7B", "7C", 
-    "4A", "4B", "4C", "4D", "6A", "6B", "6C", "6D", "PG-SP1", "PG-SP2"
+    "3A", "3B", "3C", "3D", "4A", "4B", "4C", "4D"
 ]
 days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 slots = [
@@ -130,14 +121,11 @@ slots = [
     "S4 (12:00 - 12:50)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
 ]
 
-# Load existing Maths constraints if any
 default_maths = current_config.get("maths_slots", [])
 if not default_maths:
-    default_maths = [{"Class": "3A", "Day": "Monday", "Slot": "S1 (9:00 - 9:55)", "Faculty": "Prof. X"}]
+    default_maths = [{"Class": "", "Day": "", "Slot": "", "Faculty": ""}]
 
 df_maths = pd.DataFrame(default_maths)
-
-# Interactive data editor
 edited_maths_df = st.data_editor(
     df_maths,
     num_rows="dynamic",
@@ -152,9 +140,55 @@ edited_maths_df = st.data_editor(
 
 st.divider()
 
+# =====================================================================
+# NEW: CSE Lab Allocation for 1st & 2nd Semester
+# =====================================================================
+st.header("4. CSE Lab Allocation (1st & 2nd Semester)")
+st.markdown("""
+Assign **CSE Labs 1–4** to specific class sections (1A,1B,1C,2A,2B,2C) on fixed days and time slots.
+The lab subject itself is irrelevant – this reserves the **room** for that section at that time.
+Add a row for each required lab session.
+""")
+
+# Define available lab rooms and sections
+lab_rooms = ["CSE Lab 1", "CSE Lab 2", "CSE Lab 3", "CSE Lab 4"]
+first_second_sections = ["1A", "1B", "1C", "2A", "2B", "2C"]
+days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+slots = [
+    "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)", 
+    "S4 (12:00 - 12:50)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
+]
+
+# Load existing lab allocations if any; start with a single empty row as example
+default_lab_alloc = current_config.get("cse_lab_allocations", [])
+if not default_lab_alloc:
+    # Provide one empty row as a template (like Maths table)
+    default_lab_alloc = [{"Class": "", "Lab Room": "", "Day": "", "Slot": ""}]
+
+df_lab = pd.DataFrame(default_lab_alloc)
+
+edited_lab_df = st.data_editor(
+    df_lab,
+    num_rows="dynamic",   # allow adding/removing rows
+    column_config={
+        "Class": st.column_config.SelectboxColumn("Class Section", options=first_second_sections, required=True),
+        "Lab Room": st.column_config.SelectboxColumn("Lab Room", options=lab_rooms, required=True),
+        "Day": st.column_config.SelectboxColumn("Day", options=days, required=True),
+        "Slot": st.column_config.SelectboxColumn("Slot", options=slots, required=True),
+    },
+    use_container_width=True,
+    key="lab_alloc_editor"
+)
+
+st.divider()
+
+# ----------------------------------------------------------------------
+# Save all constraints
+# ----------------------------------------------------------------------
 if st.button("💾 Save Constraints", type="primary"):
-    # Convert dataframe back to dicts
+    # Convert dataframes to list of dicts
     math_slots_list = edited_maths_df.to_dict(orient="records")
+    lab_alloc_list = edited_lab_df.to_dict(orient="records")
     
     doc = {
         "type": "special_subjects",
@@ -162,12 +196,13 @@ if st.button("💾 Save Constraints", type="primary"):
         "aec": selected_aec,
         "pg_shared_core": shared_core if shared_core != "None" else None,
         "pg_shared_pe": shared_pe,
-        "maths_slots": math_slots_list
+        "maths_slots": math_slots_list,
+        "cse_lab_allocations": lab_alloc_list   # new field
     }
     
     try:
         constraints_col = db["constraints"]
         constraints_col.update_one({"type": "special_subjects"}, {"$set": doc}, upsert=True)
         st.success("✅ Constraint mappings updated successfully in the database!")
-    except Exception:
-        st.warning("⚠️ Database offline. Constraints were not saved, but the UI is functioning!", icon="⚠️")
+    except Exception as e:
+        st.warning(f"⚠️ Database offline or error: {e}. Constraints were not saved, but the UI is functioning!", icon="⚠️")
