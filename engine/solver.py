@@ -21,7 +21,7 @@ from engine.constraints import (
     add_no_faculty_clash,
     add_no_section_clash,
     add_weekly_hours,
-    add_morning_filled,
+    add_no_student_gaps,
     add_faculty_break,
     add_oe_concurrency,
     add_aec_concurrency,
@@ -29,6 +29,11 @@ from engine.constraints import (
     add_maths_locks,
     add_cse_lab_locks,
     add_spread_penalty,
+    add_co_faculty_logic,
+    add_max_workload,
+    add_global_lab_capacity,
+    add_friday_half_day,
+    add_faculty_morning_penalty,
 )
 
 DAYS_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -40,9 +45,10 @@ SLOTS_LABELS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7"]
 _SEMESTER_SECTIONS = {
     "3": ["3A", "3B", "3C", "3D"],
     "4": ["4A", "4B", "4C", "4D"],
-    # PG — semester labels may differ; adjust if needed
-    "PG1": ["SP1"],
-    "PG2": ["SP2"],
+    "5": ["5A", "5B", "5C", "5D"],
+    "6": ["6A", "6B", "6C", "6D"],
+    "7": ["7A", "7B", "7C"],
+    "8": ["8A", "8B", "8C"],
 }
 
 
@@ -84,6 +90,8 @@ def _load_data(semester: str):
             "lecture_in_lab": c.get("lecture_in_lab", "No"),
             "tutorial_in_lab": c.get("tutorial_in_lab", "No"),
             "elective": c.get("elective", "No"),
+            "ug_pg": c.get("ug_pg", "UG"),
+            "aec": c.get("aec", "No"),
         }
 
     # --- Faculty ---
@@ -114,11 +122,32 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
         if sem:
             semesters_in_data.add(sem)
 
+    # --- Extract PG common codes first to use in section assignment ---
+    pg_core_code = constraints_doc.get("pg_shared_core", "None")
+    if pg_core_code == "None": pg_core_code = None
+    pg_pe_codes = constraints_doc.get("pg_shared_pe", [])
+    
     # --- section → course list ---
     section_courses: dict[str, list[str]] = {}
     for code, info in course_info.items():
         sem = info.get("semester", "")
-        sections = _sections_for_semester(sem)
+        ug_pg = str(info.get("ug_pg", "UG")).strip().upper()
+        
+        if ug_pg == "PG":
+            # For testing, we only load 3rd sem PG to avoid overloading SP1/SP2 with 1st sem
+            if sem != "3":
+                continue
+                
+            sections = []
+            is_common = (code in pg_pe_codes) or (code == pg_core_code)
+            # Route MCS to SP1, MCN to SP2. Shared subjects go to both.
+            if "MCS" in code or is_common:
+                sections.append("PG 3rd Sem - SP1")
+            if "MCN" in code or is_common:
+                sections.append("PG 3rd Sem - SP2")
+        else:
+            sections = _sections_for_semester(sem)
+            
         for sec in sections:
             section_courses.setdefault(sec, []).append(code)
 
@@ -153,8 +182,10 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
     # to available sections for that semester.
     faculty_by_course: dict[str, list[str]] = {}  # (code, sem) -> [faculty names]
     faculty_all_courses: dict[str, list[dict]] = {}  # fac_name -> [{code, sem}]
+    faculty_designations: dict[str, str] = {} # fac_name -> designation
     for fac in faculty_raw:
         name = fac.get("name", "")
+        faculty_designations[name] = str(fac.get("designation", "Assistant")).strip()
         for subj in fac.get("subjects", []):
             code = subj.get("code", "")
             sem = subj.get("semester", "")
@@ -210,19 +241,22 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
     pg_core_name = constraints_doc.get("pg_shared_core")
     pg_core_code = name_to_code.get(pg_core_name, pg_core_name) if pg_core_name else None
 
-    pg_pe_names = constraints_doc.get("pg_shared_pe", [])
-    pg_pe_codes = [name_to_code.get(n, n) for n in pg_pe_names]
+    # Auto-calculate PG Professional Elective codes from course metadata
+    pg_pe_codes = [code for code, info in course_info.items() 
+                   if str(info.get("elective", "No")).lower() in ("yes", "y", "true") 
+                   and str(info.get("ug_pg", "UG")).upper() == "PG"]
 
     lab_alloc = constraints_doc.get("cse_lab_allocations", [])
 
     # Identify section groups
     sections_3rd = [s for s in section_courses if s.startswith("3")]
     sections_4th = [s for s in section_courses if s.startswith("4")]
-    pg_sections = [s for s in section_courses if s.startswith("SP")]
+    pg_sections = [s for s in section_courses if "PG" in s or "SP" in s]
 
     return {
         "section_courses": section_courses,
         "faculty_assignments": faculty_assignments,
+        "faculty_designations": faculty_designations,
         "oe_codes": oe_codes,
         "aec_codes": aec_codes,
         "pg_core_code": pg_core_code,
@@ -238,10 +272,11 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
 # -----------------------------------------------------------------------
 # Model building
 # -----------------------------------------------------------------------
-def _create_variables(model, section_courses, course_info):
-    """Create x1 (lecture) and x2 (tutorial/practical block) BoolVars."""
+def _create_variables(model, section_courses, course_info, faculty_designations):
+    """Create x1 (lecture), x2 (tutorial/practical block), and co_fac (co-faculty) BoolVars."""
     x1 = {}
     x2 = {}
+    co_fac = {} # (fac_name, sec, cc, d, t) -> BoolVar
 
     for sec, courses in section_courses.items():
         for cc in courses:
@@ -273,14 +308,18 @@ def _create_variables(model, section_courses, course_info):
                         x2[(sec, cc, "P", d, t)] = model.NewBoolVar(
                             f"prac_{sec}_{cc}_d{d}_t{t}"
                         )
+                        # Create dynamic co-faculty assignment variables for every faculty member for this specific practical block
+                        for fac_name in faculty_designations.keys():
+                            k_cf = (fac_name, sec, cc, d, t)
+                            co_fac[k_cf] = model.NewBoolVar(f"cofac_{fac_name}_{sec}_{cc}_{d}_{t}")
 
-    return x1, x2
+    return x1, x2, co_fac
 
 
 # -----------------------------------------------------------------------
 # Solution extraction
 # -----------------------------------------------------------------------
-def _extract_solution(solver, x1, x2, section_courses, course_info,
+def _extract_solution(solver, x1, x2, co_fac, section_courses, course_info,
                       faculty_assignments):
     """
     Read solved variable values and build timetable grids.
@@ -333,6 +372,13 @@ def _extract_solution(solver, x1, x2, section_courses, course_info,
                             short = "T" if etype == "T" else "P"
                             grid[d][t] = f"{cc} ({sec}) [{short}]"
                             grid[d][t + 1] = f"{cc} ({sec}) [{short}]"
+        
+        # Add their co-faculty assignments!
+        for (fac_name, sec, cc, d, t), var in co_fac.items():
+            if fac_name == fac and solver.Value(var) == 1:
+                grid[d][t] = f"{cc} ({sec}) [Co-Fac P]"
+                grid[d][t + 1] = f"{cc} ({sec}) [Co-Fac P]"
+                
         faculty_tt[fac] = grid
 
     return section_tt, faculty_tt
@@ -384,14 +430,18 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
 
     # --- Build model ---
     model = cp_model.CpModel()
-    x1, x2 = _create_variables(model, section_courses, course_info)
+    x1, x2, co_fac = _create_variables(model, section_courses, course_info, mappings["faculty_designations"])
 
     # Hard constraints
-    add_no_faculty_clash(model, x1, x2, faculty_assignments)
+    add_no_faculty_clash(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["pg_core_code"], mappings["pg_sections"])
+    add_co_faculty_logic(model, x2, co_fac, mappings["faculty_assignments"])
+    add_max_workload(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["faculty_designations"], semester)
     add_no_section_clash(model, x1, x2, section_courses)
     add_weekly_hours(model, x1, x2, section_courses, course_info)
-    add_morning_filled(model, x1, x2, section_courses)
+    add_no_student_gaps(model, x1, x2, section_courses)
     add_faculty_break(model, x1, x2, faculty_assignments)
+    add_global_lab_capacity(model, x2, section_courses, course_info, mappings["pg_sections"])
+    add_friday_half_day(model, x1, x2, section_courses)
 
     # Special subject constraints
     if mappings["oe_codes"]:
@@ -403,13 +453,27 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
         add_pg_shared(model, x1, x2, section_courses, mappings["pg_sections"],
                       mappings["pg_core_code"], mappings["pg_pe_codes"])
     if mappings["maths_slots"]:
-        add_maths_locks(model, x1, mappings["maths_slots"])
+        add_maths_locks(model, x1, x2, mappings["maths_slots"])
 
     # CSE lab locks (returns blocked room-slots, useful for future room modeling)
     _blocked = add_cse_lab_locks(model, x1, x2, mappings["lab_alloc"])
 
     # Soft constraints (objective)
     penalties = add_spread_penalty(model, x1, x2, section_courses)
+    penalties.extend(add_faculty_morning_penalty(model, x1, x2, mappings["faculty_assignments"]))
+    
+    # Soft Penalty: Co-faculty mismatch (penalize if fac_name doesn't normally teach this course code)
+    # Build a set of course codes each faculty teaches
+    fac_taught_courses = {}
+    for fac, assigns in mappings["faculty_assignments"].items():
+        fac_taught_courses[fac] = {cc for (_, cc) in assigns}
+        
+    for (fac_name, sec, cc, d, t), var in co_fac.items():
+        taught = fac_taught_courses.get(fac_name, set())
+        if cc not in taught:
+            # Add a penalty of 10 for every slot they are mismatched
+            penalties.append(10 * var)
+            
     if penalties:
         model.Minimize(sum(penalties))
 
@@ -438,11 +502,10 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     }
 
     if status_code in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        sec_tt, fac_tt = _extract_solution(
-            solver, x1, x2, section_courses, course_info, faculty_assignments
+        result["timetables"], result["faculty_timetables"] = _extract_solution(
+            solver, x1, x2, co_fac, section_courses, course_info,
+            mappings["faculty_assignments"]
         )
-        result["timetables"] = sec_tt
-        result["faculty_timetables"] = fac_tt
     elif status_code == cp_model.INFEASIBLE:
         result["errors"].append(
             "Model is INFEASIBLE — the constraints are contradictory. "

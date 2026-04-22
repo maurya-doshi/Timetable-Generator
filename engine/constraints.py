@@ -30,9 +30,11 @@ VALID_BLOCK_STARTS = [0, 1, 2, 4, 5]  # pairs: (0,1),(1,2),(2,3),(4,5),(5,6)
 # ===================================================================
 # H1 — No faculty double-booking
 # ===================================================================
-def add_no_faculty_clash(model, x1, x2, faculty_assignments):
+def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_core_code=None, pg_sections=None):
     """
     For each faculty member, for each (day, slot): at most 1 teaching event.
+    Deduplicates the PG Shared Core course since SP-1 and SP-2 sit in the same room.
+    Also ensures they are not double-booked as a dynamic Co-Faculty.
 
     faculty_assignments: dict  faculty_name -> list of (section, course_code)
     """
@@ -40,24 +42,125 @@ def add_no_faculty_clash(model, x1, x2, faculty_assignments):
         for d in range(NUM_DAYS):
             for t in range(NUM_SLOTS):
                 terms = []
+                # To handle PG Shared Core, we should only count it once per faculty per time slot.
+                seen_pg_core_lecture = False
+                seen_pg_core_blocks = set()
+
                 for sec, cc in assignments:
+                    is_pg_core = (pg_shared_core_code and cc == pg_shared_core_code and pg_sections and sec in pg_sections)
+                    
                     # 1-slot lectures
                     key1 = (sec, cc, d, t)
                     if key1 in x1:
-                        terms.append(x1[key1])
+                        if is_pg_core:
+                            if not seen_pg_core_lecture:
+                                terms.append(x1[key1])
+                                seen_pg_core_lecture = True
+                        else:
+                            terms.append(x1[key1])
+                            
                     # 2-slot blocks that COVER slot t
                     for etype in ("T", "P"):
                         # block starting at t covers slots t, t+1
                         key_start = (sec, cc, etype, d, t)
                         if key_start in x2:
-                            terms.append(x2[key_start])
+                            if is_pg_core:
+                                if f"start_{etype}" not in seen_pg_core_blocks:
+                                    terms.append(x2[key_start])
+                                    seen_pg_core_blocks.add(f"start_{etype}")
+                            else:
+                                terms.append(x2[key_start])
                         # block starting at t-1 covers slots t-1, t
                         if t > 0:
                             key_prev = (sec, cc, etype, d, t - 1)
                             if key_prev in x2:
-                                terms.append(x2[key_prev])
+                                if is_pg_core:
+                                    if f"prev_{etype}" not in seen_pg_core_blocks:
+                                        terms.append(x2[key_prev])
+                                        seen_pg_core_blocks.add(f"prev_{etype}")
+                                else:
+                                    terms.append(x2[key_prev])
+                # 2-slot dynamic co-faculty blocks that COVER slot t
+                # If they are assigned as co-faculty starting at t
+                for (fac_name, sec, cc, d_var, t_var), var in co_fac.items():
+                    if fac_name == fac and d_var == d:
+                        if t_var == t or (t > 0 and t_var == t - 1):
+                            terms.append(var)
+
                 if len(terms) > 1:
                     model.Add(sum(terms) <= 1)
+
+
+# ===================================================================
+# H1.5 — Dynamic Co-Faculty Logic & Workload Caps
+# ===================================================================
+def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
+    """
+    For every practical (P) block, exactly 2 Co-Faculty members must be assigned.
+    The primary faculty assigned to this lab CANNOT be chosen as a co-faculty.
+    """
+    from collections import defaultdict
+    block_to_cofacs = defaultdict(list)
+    for (fac_name, sec, cc, d, t), var in co_fac.items():
+        block_to_cofacs[(sec, cc, d, t)].append((fac_name, var))
+
+    for (sec, cc, d, t), cofac_list in block_to_cofacs.items():
+        k_prac = (sec, cc, "P", d, t)
+        if k_prac in x2:
+            prac_var = x2[k_prac]
+            
+            # 1. Exactly 2 co-faculty if the block is scheduled, 0 otherwise.
+            all_vars = [var for _, var in cofac_list]
+            model.Add(sum(all_vars) == 2 * prac_var)
+            
+            # 2. Primary faculty cannot be co-faculty
+            # Find the primary faculty for this (sec, cc)
+            for fac_name, assignments in faculty_assignments.items():
+                if (sec, cc) in assignments:
+                    # This faculty is the primary teacher! Force their co-fac var to 0.
+                    for cf_name, var in cofac_list:
+                        if cf_name == fac_name:
+                            model.Add(var == 0)
+
+def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designations, semester="odd"):
+    """
+    Enforces Maximum Workload Units per faculty.
+    1 L, T, or P block = 2 units.
+    Limits (Odd): Prof=18, Assoc=24, Assist=28
+    Limits (Even): Prof=14, Assoc=18, Assist=24
+    """
+    if semester.lower() == "odd":
+        limits = {"Professor": 18, "Associate": 24, "Assistant": 28}
+    else:
+        limits = {"Professor": 14, "Associate": 18, "Assistant": 24}
+
+    for fac, assignments in faculty_assignments.items():
+        desig = faculty_designations.get(fac, "Assistant")
+        max_units = limits.get(desig, 28)
+        
+        events = []
+        # Primary lectures (1 slot = 2 units)
+        for sec, cc in assignments:
+            for d in range(5):
+                for t in range(7):
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1:
+                        events.append(x1[k1])
+                        
+                    # Primary blocks (2 slots = 2 units)
+                    for etype in ("T", "P"):
+                        k2 = (sec, cc, etype, d, t)
+                        if k2 in x2:
+                            events.append(x2[k2])
+                            
+        # Co-faculty blocks (2 slots = 2 units)
+        for (fac_name, sec, cc, d, t), var in co_fac.items():
+            if fac_name == fac:
+                events.append(var)
+                
+        # Total units = sum(events) * 2
+        # sum(events) * 2 <= max_units  =>  sum(events) <= max_units // 2
+        model.Add(sum(events) <= max_units // 2)
 
 
 # ===================================================================
@@ -141,30 +244,43 @@ def add_weekly_hours(model, x1, x2, section_courses, course_info):
 
 
 # ===================================================================
-# H4 — Morning slots must be filled
+# H4 — No Student Gaps (Contiguous from S1)
 # ===================================================================
-def add_morning_filled(model, x1, x2, section_courses):
+def add_no_student_gaps(model, x1, x2, section_courses):
     """
-    For each section, each day, each morning slot (S1-S4): exactly 1 course.
+    Ensures that if a section has a class at slot t, they MUST have a class at slot t-1.
+    This forces all classes to be packed at the start of the day (S1 onwards),
+    preventing any gaps in the student's schedule, while allowing them to finish early
+    if they run out of weekly hours.
     """
     for sec, courses in section_courses.items():
         for d in range(NUM_DAYS):
-            for t in MORNING_SLOTS:
+            # Create a boolean variable for each slot indicating if it's active
+            active = []
+            for t in range(NUM_SLOTS):
                 terms = []
                 for cc in courses:
-                    key1 = (sec, cc, d, t)
-                    if key1 in x1:
-                        terms.append(x1[key1])
+                    # 1-slot lecture
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1: terms.append(x1[k1])
+                    
+                    # 2-slot blocks (covers t if it starts at t OR t-1)
                     for etype in ("T", "P"):
-                        key_start = (sec, cc, etype, d, t)
-                        if key_start in x2:
-                            terms.append(x2[key_start])
+                        k_start = (sec, cc, etype, d, t)
+                        if k_start in x2: terms.append(x2[k_start])
                         if t > 0:
-                            key_prev = (sec, cc, etype, d, t - 1)
-                            if key_prev in x2:
-                                terms.append(x2[key_prev])
-                if terms:
-                    model.Add(sum(terms) == 1)
+                            k_prev = (sec, cc, etype, d, t - 1)
+                            if k_prev in x2: terms.append(x2[k_prev])
+                            
+                # is_active = 1 if terms > 0 else 0
+                is_active = model.NewBoolVar(f"active_{sec}_d{d}_t{t}")
+                model.AddMaxEquality(is_active, terms)
+                active.append(is_active)
+                
+            # Constraint: if slot t is empty, slot t+1 MUST be empty.
+            # Equivalently: if slot t+1 is active, slot t MUST be active.
+            for t in range(NUM_SLOTS - 1):
+                model.AddImplication(active[t+1], active[t])
 
 
 # ===================================================================
@@ -225,31 +341,32 @@ def add_faculty_break(model, x1, x2, faculty_assignments):
 
 
 # ===================================================================
-# H6 — OE concurrency (all OE on Monday S5)
+# H6 — OE concurrency (all sections take each OE at the same time)
 # ===================================================================
 def add_oe_concurrency(model, x1, section_courses, oe_course_codes):
     """
-    All open-elective courses are fixed to Monday (day 0), slot S5 (slot 4).
-    They must be scheduled as a 1-slot lecture at that exact position.
+    For each OE course, all sections that take it must have their lectures
+    at exactly the same (day, slot) combinations. This means if 5A has
+    OE-X at (Mon S2, Wed S3, Fri S1), then 5B/5C/5D also have OE-X at
+    those exact slots.
+    
+    This works for any L value (L=1, L=3, etc.).
     """
-    DAY_MON = 0
-    SLOT_S5 = 4
-    for sec, courses in section_courses.items():
-        for cc in courses:
-            if cc not in oe_course_codes:
-                continue
-            # Force the lecture at Monday S5
-            key = (sec, cc, DAY_MON, SLOT_S5)
-            if key in x1:
-                model.Add(x1[key] == 1)
-            # Forbid this course on every other (day, slot)
+    for cc in oe_course_codes:
+        # Find all sections that have this OE course
+        relevant_secs = [s for s in section_courses if cc in section_courses.get(s, [])]
+        if len(relevant_secs) <= 1:
+            continue
+        
+        # Pick the first section as the reference — all others must match it
+        ref = relevant_secs[0]
+        for sec in relevant_secs[1:]:
             for d in range(NUM_DAYS):
                 for t in range(NUM_SLOTS):
-                    if (d, t) == (DAY_MON, SLOT_S5):
-                        continue
-                    k = (sec, cc, d, t)
-                    if k in x1:
-                        model.Add(x1[k] == 0)
+                    k_ref = (ref, cc, d, t)
+                    k_sec = (sec, cc, d, t)
+                    if k_ref in x1 and k_sec in x1:
+                        model.Add(x1[k_ref] == x1[k_sec])
 
 
 # ===================================================================
@@ -286,37 +403,64 @@ def add_aec_concurrency(model, x1, section_courses, aec_course_codes, sections_3
 # ===================================================================
 # H8 — PG shared classes
 # ===================================================================
-def add_pg_shared(model, x1, x2, section_courses, pg_sections,
-                  shared_core_code, shared_pe_codes):
+def add_pg_shared(model, x1, x2, section_courses, pg_sections, 
+                  shared_core_code, pg_elective_codes):
     """
-    Shared PG core / PE courses must happen at the same (day, slot)
-    for both PG sections (SP1, SP2).
+    Synchronizes the timetable for the two PG Specializations (SP1, SP2):
+    1. Core Theory: Both sections take the Shared Core at the exact same time.
+    2. Electives (PE): Both sections take their Professional Electives concurrently.
+    3. Blocks (Labs/Tuts): Both sections take ALL their Labs/Tutorials concurrently.
     """
     if len(pg_sections) < 2:
         return
-    shared_codes = []
-    if shared_core_code:
-        shared_codes.append(shared_core_code)
-    shared_codes.extend(shared_pe_codes or [])
 
     s1, s2 = pg_sections[0], pg_sections[1]
-    for cc in shared_codes:
-        if cc not in section_courses.get(s1, []) or cc not in section_courses.get(s2, []):
-            continue
-        # Tie lecture vars
+    
+    # 1. Sync Shared Core Lecture
+    if shared_core_code and shared_core_code in section_courses.get(s1, []) and shared_core_code in section_courses.get(s2, []):
         for d in range(NUM_DAYS):
             for t in range(NUM_SLOTS):
-                k1 = (s1, cc, d, t)
-                k2 = (s2, cc, d, t)
+                k1 = (s1, shared_core_code, d, t)
+                k2 = (s2, shared_core_code, d, t)
                 if k1 in x1 and k2 in x1:
                     model.Add(x1[k1] == x1[k2])
-            # Tie block vars
-            for t in VALID_BLOCK_STARTS:
-                for etype in ("T", "P"):
+                    
+    # 2. Sync Professional Electives (PEs)
+    # The user rule: PEs occur at the exact same time. 
+    # Since PE subject codes are identical in the Excel sheet for both sections, we just tie them!
+    if pg_elective_codes:
+        for cc in pg_elective_codes:
+            if cc in section_courses.get(s1, []) and cc in section_courses.get(s2, []):
+                for d in range(NUM_DAYS):
+                    for t in range(NUM_SLOTS):
+                        k1 = (s1, cc, d, t)
+                        k2 = (s2, cc, d, t)
+                        if k1 in x1 and k2 in x1:
+                            model.Add(x1[k1] == x1[k2])
+                            
+    # 3. Sync ALL Labs and Tutorials
+    # The user rule: Whenever SP-1 has ANY Lab/Tut, SP-2 MUST have a Lab/Tut at the exact same time.
+    for d in range(NUM_DAYS):
+        for t in VALID_BLOCK_STARTS:
+            for etype in ("T", "P"):
+                # Gather all block vars for SP-1 starting at (d,t)
+                s1_blocks = []
+                for cc in section_courses.get(s1, []):
                     k1 = (s1, cc, etype, d, t)
+                    if k1 in x2:
+                        s1_blocks.append(x2[k1])
+                        
+                # Gather all block vars for SP-2 starting at (d,t)
+                s2_blocks = []
+                for cc in section_courses.get(s2, []):
                     k2 = (s2, cc, etype, d, t)
-                    if k1 in x2 and k2 in x2:
-                        model.Add(x2[k1] == x2[k2])
+                    if k2 in x2:
+                        s2_blocks.append(x2[k2])
+                        
+                # If both have potential blocks of this type at this time, tie their sum!
+                # sum(s1_blocks) == sum(s2_blocks)
+                if s1_blocks and s2_blocks:
+                    model.Add(sum(s1_blocks) == sum(s2_blocks))
 
 
 # ===================================================================
@@ -334,24 +478,33 @@ DAY_LABEL_TO_IDX = {
 }
 
 
-def add_maths_locks(model, x1, maths_slots, maths_course_code="MATHS"):
+def add_maths_locks(model, x1, x2, maths_slots, maths_course_code="MATHS"):
     """
     Lock pre-assigned maths slots.
-    maths_slots: list of {"Class": "3A", "Day": "Monday", "Slot": "S1 (...)", ...}
+    maths_slots: list of {"Class": "3A", "Day": "Monday", "Slot": "S1 (...)", "Faculty": "MATHS TUT"}
     """
     for entry in maths_slots:
         sec = entry.get("Class", "")
         day_label = entry.get("Day", "")
         slot_label = entry.get("Slot", "")
+        faculty_label = entry.get("Faculty", "")
         if not sec or not day_label or not slot_label:
             continue
         d = DAY_LABEL_TO_IDX.get(day_label)
         t = SLOT_LABEL_TO_IDX.get(slot_label)
         if d is None or t is None:
             continue
-        key = (sec, maths_course_code, d, t)
-        if key in x1:
-            model.Add(x1[key] == 1)
+            
+        if "TUT" in faculty_label.upper():
+            # 2-slot tutorial block
+            key2 = (sec, maths_course_code, "T", d, t)
+            if key2 in x2:
+                model.Add(x2[key2] == 1)
+        else:
+            # 1-slot lecture
+            key1 = (sec, maths_course_code, d, t)
+            if key1 in x1:
+                model.Add(x1[key1] == 1)
 
 
 # ===================================================================
@@ -407,4 +560,94 @@ def add_spread_penalty(model, x1, x2, section_courses):
                     model.Add(total >= 2).OnlyEnforceIf(penalty)
                     model.Add(total <= 1).OnlyEnforceIf(penalty.Not())
                     penalties.append(penalty)
+    return penalties
+
+# ===================================================================
+# Final Time-Based Constraints
+# ===================================================================
+def add_global_lab_capacity(model, x2, section_courses, course_info, pg_sections):
+    """
+    Max 4 concurrent UG labs and 2 concurrent PG labs across the college.
+    Includes Tutorials that are held in the lab (tutorial_in_lab == "Yes").
+    """
+    for d in range(NUM_DAYS):
+        for t in VALID_BLOCK_STARTS:
+            ug_blocks = []
+            pg_blocks = []
+            
+            for sec, courses in section_courses.items():
+                for cc in courses:
+                    is_pg = (pg_sections and sec in pg_sections)
+                    
+                    # Practical Blocks
+                    k_prac = (sec, cc, "P", d, t)
+                    if k_prac in x2:
+                        if is_pg: pg_blocks.append(x2[k_prac])
+                        else: ug_blocks.append(x2[k_prac])
+                        
+                    # Tutorial in Lab Blocks
+                    if course_info.get(cc, {}).get("tutorial_in_lab", "No").lower() in ("yes", "y", "true"):
+                        k_tut = (sec, cc, "T", d, t)
+                        if k_tut in x2:
+                            if is_pg: pg_blocks.append(x2[k_tut])
+                            else: ug_blocks.append(x2[k_tut])
+                            
+            if ug_blocks:
+                model.Add(sum(ug_blocks) <= 4)
+            if pg_blocks:
+                model.Add(sum(pg_blocks) <= 2)
+
+def add_friday_half_day(model, x1, x2, section_courses):
+    """
+    Friday (Day 4) slots S5, S6, S7 (Slots 4, 5, 6) must be completely empty.
+    """
+    DAY_FRI = 4
+    for sec, courses in section_courses.items():
+        for cc in courses:
+            # Block Lectures in S5, S6, S7
+            for t in AFTERNOON_SLOTS:
+                k1 = (sec, cc, DAY_FRI, t)
+                if k1 in x1:
+                    model.Add(x1[k1] == 0)
+                    
+            # Block 2-slot blocks that touch S5, S6, S7
+            # If a block starts at t=4 (S5) or t=5 (S6), it falls in the afternoon.
+            for t in [4, 5]:
+                for etype in ("T", "P"):
+                    k2 = (sec, cc, etype, DAY_FRI, t)
+                    if k2 in x2:
+                        model.Add(x2[k2] == 0)
+
+def add_faculty_morning_penalty(model, x1, x2, faculty_assignments):
+    """
+    Penalize if a faculty has NO morning sessions (S1-S4) across the entire week.
+    Returns a list of penalties to append to the master penalty list.
+    """
+    penalties = []
+    for fac, assignments in faculty_assignments.items():
+        morning_vars = []
+        for sec, cc in assignments:
+            for d in range(NUM_DAYS):
+                for t in MORNING_SLOTS:
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1:
+                        morning_vars.append(x1[k1])
+                # Blocks starting in the morning
+                # 0, 1, 2 are all strictly morning blocks (covering S1-S2, S2-S3, S3-S4)
+                for t in [0, 1, 2]:
+                    for etype in ("T", "P"):
+                        k2 = (sec, cc, etype, d, t)
+                        if k2 in x2:
+                            morning_vars.append(x2[k2])
+                            
+        if morning_vars:
+            # has_morning_fac is 1 if they have ANY morning sessions, 0 if NONE.
+            has_morning_fac = model.NewBoolVar(f"has_morning_{fac}")
+            model.AddMaxEquality(has_morning_fac, morning_vars)
+            
+            # Penalize the LACK of morning sessions.
+            # Minimizing (-100 * has_morning_fac) is equivalent to 
+            # reducing the total penalty score by 100 if they DO have a morning session.
+            penalties.append(-100 * has_morning_fac)
+            
     return penalties
