@@ -135,7 +135,9 @@ def parse_courses_sheet(ws):
         "Lecture in Lab?": ["lecture in lab", "lecture lab", "lec in lab"],
         "Tutorial in Lab?": ["tutorial in lab", "tut in lab", "tutorial lab"],
         "Semester": ["semester", "sem"],
-        "Elective": ["elective"]
+        "Elective": ["elective"],
+        "AEC": ["ability enhancement", "abiliity enhancement", "aec"],
+        "UG_PG": ["ug/pg", "ug", "pg"]
     }
     
     # Map columns by matching patterns
@@ -186,6 +188,8 @@ def parse_courses_sheet(ws):
             "tutorial_in_lab": get_val("Tutorial in Lab?", "No"),
             "semester": get_val("Semester"),
             "elective": get_val("Elective", "No"),
+            "aec": get_val("AEC", "No"),
+            "ug_pg": get_val("UG_PG", "UG"),
         }
         records.append(record)
     

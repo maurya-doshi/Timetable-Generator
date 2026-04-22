@@ -130,7 +130,7 @@ if timetables:
             df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
             st.dataframe(
                 df.style.map(
-                    lambda v: "background-color: #e8f5e9" if v else "background-color: #f5f5f5"
+                    lambda v: "background-color: #e8f5e9; color: black;" if v else "background-color: #f5f5f5; color: black;"
                 ),
                 use_container_width=True,
                 height=250,
@@ -149,7 +149,7 @@ if fac_tt:
             df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
             st.dataframe(
                 df.style.map(
-                    lambda v: "background-color: #e3f2fd" if v else "background-color: #f5f5f5"
+                    lambda v: "background-color: #e3f2fd; color: black;" if v else "background-color: #f5f5f5; color: black;"
                 ),
                 use_container_width=True,
                 height=250,

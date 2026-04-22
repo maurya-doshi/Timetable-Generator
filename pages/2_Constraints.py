@@ -24,6 +24,11 @@ except Exception:
     ]
 
 course_names = [c.get("course_name", c.get("course_code", "Unknown")) for c in courses]
+ug_courses = [c for c in courses if str(c.get("ug_pg", "UG")).upper() == "UG"]
+pg_courses = [c for c in courses if str(c.get("ug_pg", "UG")).upper() == "PG"]
+
+ug_course_names = [c.get("course_name", c.get("course_code", "Unknown")) for c in ug_courses]
+pg_course_names = [c.get("course_name", c.get("course_code", "Unknown")) for c in pg_courses]
 
 if not course_names:
     st.info("No courses found in the `courses` collection. Once the Master Subject List parsing is complete, they will appear here.", icon="🕒")
@@ -36,72 +41,84 @@ try:
 except Exception:
     pass
 
-# Handle defaults
-default_oe = current_config.get("open_electives", [])
-default_oe = [x for x in default_oe if x in course_names]
-
-default_aec = current_config.get("aec", [])
-default_aec = [x for x in default_aec if x in course_names]
-
+# --- Fetch existing configuration for PG ---
 default_pg_core = current_config.get("pg_shared_core", "None")
-if default_pg_core not in course_names:
+if default_pg_core not in pg_course_names:
     default_pg_core = "None"
 
 default_pg_pe = current_config.get("pg_shared_pe", [])
-default_pg_pe = [x for x in default_pg_pe if x in course_names]
+default_pg_pe = [x for x in default_pg_pe if x in pg_course_names]
 
-st.header("1. Special Subject Identifiers")
-st.markdown("Assign specific behaviors to subjects (e.g., Open Electives must run Monday 5th slot).")
+# --- Auto-calculate AEC and OE from courses data ---
+computed_oe_data = [c for c in courses 
+               if str(c.get("semester")).strip() in ["5", "6", "7"] 
+               and str(c.get("elective", "No")).lower() in ["yes", "y", "true"] 
+               and str(c.get("ug_pg", "UG")).upper() == "UG"]
 
-col1, col2 = st.columns(2)
+computed_oe = [c.get("course_name", c.get("course_code")) for c in computed_oe_data]
+computed_oe_display = [f"{c.get('course_name')} (Sem {c.get('semester')})" for c in computed_oe_data]
 
-with col1:
-    st.subheader("Open Electives (OE)")
-    st.markdown("OE for 5th/6th/7th sem are scheduled concurrently on **Monday, 5th Slot**.")
-    selected_oes = st.multiselect(
-        "Select Open Elective Subjects", 
-        options=course_names, 
-        default=default_oe,
-        key="oe"
+computed_aec_data = [c for c in courses 
+                if str(c.get("semester")).strip() in ["3", "4"]
+                and str(c.get("aec", "No")).lower() in ["yes", "y", "true"]]
+
+computed_aec = [c.get("course_name", c.get("course_code")) for c in computed_aec_data]
+computed_aec_display = [f"{c.get('course_name')} (Sem {c.get('semester')})" for c in computed_aec_data]
+
+st.header("1. Subject Constraints")
+ug_tab, pg_tab = st.tabs(["🎓 Undergraduate (UG)", "🏫 Postgraduate (PG)"])
+
+with ug_tab:
+    st.subheader("Automated UG Subject Identifiers")
+    st.markdown("We have automatically identified your Open Electives and AEC subjects from the Excel file.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info("**Open Electives (OE)**\n\n*(Scheduled concurrently on **Monday, 5th Slot** for 5th/6th/7th Sem)*")
+        if computed_oe_display:
+            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_oe_display}), use_container_width=True, hide_index=True)
+        else:
+            st.write("None detected")
+
+    with col2:
+        st.info("**Ability Enhancement Course (AEC)**\n\n*(Scheduled at the **same time** for all 3rd & 4th Sem sections)*")
+        if computed_aec_display:
+            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_aec_display}), use_container_width=True, hide_index=True)
+        else:
+            st.write("None detected")
+
+    st.write("---")
+    st.markdown("**Are the automatically identified AEC and OE subjects correct?**")
+    verify_choice = st.radio(
+        label="Verify Automation",
+        options=["🟢 Yes, use these automatically identified subjects", "🔴 No, let me select manually"],
+        horizontal=True,
+        label_visibility="collapsed"
     )
 
-with col2:
-    st.subheader("Ability Enhancement Course (AEC)")
-    st.markdown("AEC for **3rd & 4th sem** is scheduled at the **same time** for all sections.")
-    selected_aec = st.multiselect(
-        "Select AEC Subjects", 
-        options=course_names, 
-        default=default_aec,
-        key="aec"
-    )
+    if "Yes" in verify_choice:
+        selected_oes = computed_oe
+        selected_aec = computed_aec
+    else:
+        st.warning("Manual Override Enabled. Please select the correct UG subjects below:")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            selected_oes = st.multiselect("Open Elective Subjects", options=ug_course_names, default=[x for x in computed_oe if x in ug_course_names])
+        with col_b:
+            selected_aec = st.multiselect("AEC Subjects", options=ug_course_names, default=[x for x in computed_aec if x in ug_course_names])
 
-st.divider()
-
-st.header("2. PG Shared Classes (SP-1 & SP-2)")
-st.markdown("Select subjects that are shared between PG Specialization 1 and Specialization 2 and should be conducted together in the same room.")
-
-col3, col4 = st.columns(2)
-
-with col3:
-    st.subheader("Shared Core Course")
-    core_options = ["None"] + course_names
-    core_index = core_options.index(default_pg_core) if default_pg_core in core_options else 0
-    shared_core = st.selectbox(
-        "Select Core Course", 
-        options=core_options, 
-        index=core_index,
-        key="pg_core"
-    )
-
-with col4:
-    st.subheader("Shared Professional Electives")
-    st.markdown("Select exactly **2** Shared Electives.")
-    shared_pe = st.multiselect(
-        "Select Shared Electives", 
-        options=course_names, 
-        default=default_pg_pe,
-        key="pg_pe"
-    )
+with pg_tab:
+    st.subheader("PG Shared Classes (SP-1 & SP-2)")
+    st.markdown("*(Select specific PG subjects taught by the same faculty that must be scheduled together in the same room)*")
+    
+    col_pg1, col_pg2 = st.columns(2)
+    with col_pg1:
+        core_options = ["None"] + pg_course_names
+        idx = core_options.index(default_pg_core) if default_pg_core in core_options else 0
+        shared_core = st.selectbox("Shared Core Course", options=core_options, index=idx)
+    
+    with col_pg2:
+        st.info("ℹ️ **Professional Electives & Labs**\n\nThe solver engine will automatically sync ALL Professional Electives and Labs to happen concurrently for SP-1 and SP-2. No manual selection required!")
 
 st.divider()
 
@@ -123,7 +140,28 @@ slots = [
 
 default_maths = current_config.get("maths_slots", [])
 if not default_maths:
-    default_maths = [{"Class": "", "Day": "", "Slot": "", "Faculty": ""}]
+    default_maths = [
+        # 3A
+        {"Class": "3A", "Day": "Monday", "Slot": "S2 (9:55 - 10:50)", "Faculty": "MATHS"},
+        {"Class": "3A", "Day": "Wednesday", "Slot": "S3 (11:05 - 12:00)", "Faculty": "MATHS"},
+        {"Class": "3A", "Day": "Thursday", "Slot": "S4 (12:00 - 12:50)", "Faculty": "MATHS"},
+        {"Class": "3A", "Day": "Tuesday", "Slot": "S1 (9:00 - 9:55)", "Faculty": "MATHS TUT"},
+        # 3B
+        {"Class": "3B", "Day": "Monday", "Slot": "S4 (12:00 - 12:50)", "Faculty": "MATHS"},
+        {"Class": "3B", "Day": "Tuesday", "Slot": "S2 (9:55 - 10:50)", "Faculty": "MATHS TUT"},
+        {"Class": "3B", "Day": "Wednesday", "Slot": "S3 (11:05 - 12:00)", "Faculty": "MATHS"},
+        {"Class": "3B", "Day": "Thursday", "Slot": "S1 (9:00 - 9:55)", "Faculty": "MATHS"},
+        # 3C
+        {"Class": "3C", "Day": "Monday", "Slot": "S4 (12:00 - 12:50)", "Faculty": "MATHS"},
+        {"Class": "3C", "Day": "Wednesday", "Slot": "S5 (1:45 - 2:40)", "Faculty": "MATHS TUT"},
+        {"Class": "3C", "Day": "Thursday", "Slot": "S3 (11:05 - 12:00)", "Faculty": "MATHS"},
+        {"Class": "3C", "Day": "Friday", "Slot": "S2 (9:55 - 10:50)", "Faculty": "MATHS"},
+        # 3D
+        {"Class": "3D", "Day": "Monday", "Slot": "S4 (12:00 - 12:50)", "Faculty": "MATHS"},
+        {"Class": "3D", "Day": "Tuesday", "Slot": "S3 (11:05 - 12:00)", "Faculty": "MATHS"},
+        {"Class": "3D", "Day": "Wednesday", "Slot": "S3 (11:05 - 12:00)", "Faculty": "MATHS TUT"},
+        {"Class": "3D", "Day": "Friday", "Slot": "S1 (9:00 - 9:55)", "Faculty": "MATHS"},
+    ]
 
 df_maths = pd.DataFrame(default_maths)
 edited_maths_df = st.data_editor(
@@ -195,9 +233,8 @@ if st.button("💾 Save Constraints", type="primary"):
         "open_electives": selected_oes,
         "aec": selected_aec,
         "pg_shared_core": shared_core if shared_core != "None" else None,
-        "pg_shared_pe": shared_pe,
         "maths_slots": math_slots_list,
-        "cse_lab_allocations": lab_alloc_list   # new field
+        "cse_lab_allocations": lab_alloc_list
     }
     
     try:

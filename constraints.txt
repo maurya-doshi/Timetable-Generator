@@ -1,0 +1,108 @@
+# 📘 Timetable Generator — Constraints Documentation
+
+---
+
+# 🧱 GENERAL CONSTRAINTS
+
+1. 4 Labs available across all sections
+2. Maths and First Year subjects are to be taken as input
+3. Teachers must have atleast one free slot b/w occupied slots (can be considered as a soft constraint)
+4. Course Code format ~ L:T:P --> Lecture : Tutorial : Practical
+   for eg. : 3:0:1 , 1:0:0, etc;
+5. L:T:P --> Lecture : Tutorial : Practical
+   Lecture -> Duration : 55mins | 2 units of work
+   Tutorial -> Duration : 55x2 mins | 2 units of work
+   Practical -> 55x2 mins | 2 units of work
+   In general, subject with T unit is to be taken in class, but for some subjects the T unit is taken in Lab, but it does not qualify as a P unit, basically Tutorial being taken in Lab.
+6. College working hours ~ 9 AM - 4:30 PM
+   Short Break ~ 10:50 - 11:05
+   Lunch Break ~ 12:50 - 1:45
+7. In total 5 working days ~ Monday to Friday
+8. Friday is to be a half day compulsory
+9. One Lecture slot = 55mins
+
+---
+
+# 🎓 UNDERGRADUATE (UG) CONSTRAINTS
+
+12. ODD SEMESTER
+    3rd Semester -> 4 sections
+    5th Semester -> 4 sections
+    7th Semester -> 3 sections
+    Total sections = 4 + 4 + 3 = 11
+
+13. EVEN SEMESTER
+    4th Semester -> 4 sections
+    6th Semester -> 4 sections
+    8th Semester -> NO CLASSES
+    Total sections = 4 + 4 = 8
+
+14. Credits per semester
+    ODD SEMESTER
+    3rd Semester -> 21
+    5th Semester ->
+    7th Semester ->
+    EVEN SEMESTER
+    4th Semester -> 20
+    6th Semester -> 21
+    8th Semester ->
+
+15. Open electives for 5th should be after lunch, for all the classes of 5th sem it should be at the same slot
+
+16. AEC (ability enhancement course)
+    AEC subjects for both 3rd & 4th Sem sections must be scheduled at the exact same time slot for all sections within their respective semesters.
+
+---
+
+# 🎓 POSTGRADUATE (PG) CONSTRAINTS
+
+19. PG DETAILS
+    Two specializations let's call them : SP-1 and SP-2
+    each one having 1 class allotted to them
+
+20. PG Professional Electives (PEs)
+    All 3 Professional Elective courses must be scheduled at the exact same time slot for SP-1 and SP-2. The faculty and rooms are different, but the timing is perfectly synchronized.
+
+21. PG Shared Core Course
+    One core course is exactly the same across both specializations. It must be conducted by the same faculty, in the same room, at the same time.
+
+22. PG Labs & Tutorials
+    All Labs and Tutorials must be scheduled at the exact same time slot for SP-1 and SP-2. The faculty and rooms are different, but the timing is synchronized.
+
+---
+
+# 👨🏫 PROFESSOR CONSTRAINTS
+
+14. WORK LOAD OF PROFESSORS
+    ODD :
+    Professor -> 18 units  
+    Associate -> 24 units  
+    Assistant -> 28 unitS  
+
+    EVEN :
+    Professor -> 14 units  
+    Associate -> 18 units  
+    Assistant -> 24 units  
+
+---
+
+# 🏫 CLASS / SECTION CONSTRAINTS
+
+10. each section should have a different subject as their first hour throughout the week (can be treated as soft constraint)
+11. No empty slots in between classes
+
+---
+
+# 🧪 LAB CONSTRAINTS
+
+1. 4 Labs available across all sections
+
+---
+
+# 🕒 SPECIAL TIME-BASED CONSTRAINTS
+
+1. Each faculty must have one morning session(can be soft constraints but try to achieve this fully)
+2. 5th hour on Monday should be Open Elective for 5th, 6th & 7th Sem students (not that 5th 7th sem run together and 6th sem runs in the other half of the year)
+3. on Monday the last hour for the 5th sem should be the EVS subject
+4. Out of total faculty in cse dept one faculty is a industry faculty who comes either on Friday or thurday to take class for a subject of PG, that subject would be shared by another faculty with him the workload would be half-half
+   for the industry faculty work load is of 2x55 slots one fri and one thurs, if a subject has 3:0:1 then 2creds of L handled by industry and remaining by college faculty
