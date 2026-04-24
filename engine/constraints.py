@@ -24,7 +24,7 @@ NUM_SLOTS = 7
 MORNING_SLOTS = [0, 1, 2, 3]          # S1-S4 must always be filled
 AFTERNOON_SLOTS = [4, 5, 6]           # S5-S7
 # Valid start-slots for 2-consecutive-slot blocks (can't span lunch S4→S5)
-VALID_BLOCK_STARTS = [0, 1, 2, 4, 5]  # pairs: (0,1),(1,2),(2,3),(4,5),(5,6)
+VALID_BLOCK_STARTS = [0, 2, 4, 5]  # pairs: S1-S2 (0,1), S3-S4 (2,3), S5-S6 (4,5), S6-S7 (5,6)
 
 
 # ===================================================================
@@ -629,37 +629,122 @@ def add_spread_penalty(model, x1, x2, section_courses):
 # ===================================================================
 # Final Time-Based Constraints
 # ===================================================================
-def add_global_lab_capacity(model, x2, section_courses, course_info, pg_sections):
+LAB_ROOMS = ["CSE Lab 1", "CSE Lab 2", "CSE Lab 3", "CSE Lab 4"]
+
+
+def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
+                            pg_sections, blocked_room_slots=None):
     """
-    Max 4 concurrent UG labs and 2 concurrent PG labs across the college.
-    Includes Tutorials that are held in the lab (tutorial_in_lab == "Yes").
+    Assign each scheduled practical (and tutorial-in-lab) block, as well as AEC lectures,
+    to exactly one of CSE Lab 1–4.  Ensures:
+        1. If an event is scheduled → it gets exactly 1 room.
+        2. If an event is NOT scheduled → it gets 0 rooms.
+        3. No two events share the same room at the same time.
+           A 2-slot block occupies slots t AND t+1. A 1-slot lecture occupies slot t.
+        4. Rooms blocked by 1st/2nd sem CSE lab locks are unavailable.
+
+    Returns:
+        lab_room  — dict  (sec, cc, etype, d, t, room) → BoolVar
     """
-    for d in range(NUM_DAYS):
-        for t in VALID_BLOCK_STARTS:
-            ug_blocks = []
-            pg_blocks = []
+    if blocked_room_slots is None:
+        blocked_room_slots = set()
+
+    # Collect all items that need a room.
+    # We will store a tuple: (sec, cc, etype, d, t, duration, active_var)
+    needs_room = []
+    
+    for sec, courses in section_courses.items():
+        for cc in courses:
+            info = course_info.get(cc, {})
             
-            for sec, courses in section_courses.items():
-                for cc in courses:
-                    is_pg = (pg_sections and sec in pg_sections)
-                    
-                    # Practical Blocks
-                    k_prac = (sec, cc, "P", d, t)
-                    if k_prac in x2:
-                        if is_pg: pg_blocks.append(x2[k_prac])
-                        else: ug_blocks.append(x2[k_prac])
-                        
-                    # Tutorial in Lab Blocks
-                    if course_info.get(cc, {}).get("tutorial_in_lab", "No").lower() in ("yes", "y", "true"):
-                        k_tut = (sec, cc, "T", d, t)
-                        if k_tut in x2:
-                            if is_pg: pg_blocks.append(x2[k_tut])
-                            else: ug_blocks.append(x2[k_tut])
+            # Practicals always need a lab
+            P = info.get("P", 0)
+            if P > 0:
+                for d in range(NUM_DAYS):
+                    for t in VALID_BLOCK_STARTS:
+                        k = (sec, cc, "P", d, t)
+                        if k in x2:
+                            needs_room.append((sec, cc, "P", d, t, 2, x2[k]))
                             
-            if ug_blocks:
-                model.Add(sum(ug_blocks) <= 4)
-            if pg_blocks:
-                model.Add(sum(pg_blocks) <= 2)
+            # Tutorials in lab
+            if info.get("tutorial_in_lab", "No").lower() in ("yes", "y", "true"):
+                T = info.get("T", 0)
+                if T > 0:
+                    for d in range(NUM_DAYS):
+                        for t in VALID_BLOCK_STARTS:
+                            k = (sec, cc, "T", d, t)
+                            if k in x2:
+                                needs_room.append((sec, cc, "T", d, t, 2, x2[k]))
+                                
+            # AEC lectures in lab
+            if info.get("aec", "No").lower() in ("yes", "y", "true"):
+                L = info.get("L", 0)
+                if L > 0:
+                    for d in range(NUM_DAYS):
+                        for t in range(NUM_SLOTS):
+                            k = (sec, cc, d, t)
+                            if k in x1:
+                                needs_room.append((sec, cc, "L", d, t, 1, x1[k]))
+
+    # Create room-assignment BoolVars
+    lab_room = {}
+    for (sec, cc, etype, d, t, duration, active_var) in needs_room:
+        for room in LAB_ROOMS:
+            var = model.NewBoolVar(f"room_{sec}_{cc}_{etype}_d{d}_t{t}_{room}")
+            lab_room[(sec, cc, etype, d, t, room)] = var
+
+    # Constraint 1 & 2: scheduled ↔ exactly 1 room
+    for (sec, cc, etype, d, t, duration, active_var) in needs_room:
+        room_vars = [lab_room[(sec, cc, etype, d, t, room)] for room in LAB_ROOMS]
+        # sum(room_vars) == active_var  (1 if scheduled, 0 if not)
+        model.Add(sum(room_vars) == active_var)
+
+    # Constraint 3: no room double-booking
+    # Two events conflict if their occupied slots overlap on the same day+room.
+    for room in LAB_ROOMS:
+        for d in range(NUM_DAYS):
+            for t in range(NUM_SLOTS):
+                # Collect all room-vars whose event covers slot t
+                covering = []
+                for (sec, cc, etype, d2, t2, duration, active_var) in needs_room:
+                    if d2 != d:
+                        continue
+                    # A 1-slot event at t2 covers t2
+                    # A 2-slot event at t2 covers t2 and t2+1
+                    covers = False
+                    if duration == 1 and t2 == t:
+                        covers = True
+                    elif duration == 2 and (t2 == t or t2 + 1 == t):
+                        covers = True
+                        
+                    if covers:
+                        k_room = (sec, cc, etype, d, t2, room)
+                        if k_room in lab_room:
+                            covering.append(lab_room[k_room])
+                            
+                if len(covering) > 1:
+                    model.Add(sum(covering) <= 1)
+
+    # Constraint 4: blocked rooms from 1st/2nd sem CSE lab locks
+    for (room, d, t) in blocked_room_slots:
+        if room not in LAB_ROOMS:
+            continue
+        # Block any assignment that would cover this (room, d, t)
+        for (sec, cc, etype, d2, t2, duration, active_var) in needs_room:
+            if d2 != d:
+                continue
+            covers = False
+            if duration == 1 and t2 == t:
+                covers = True
+            elif duration == 2 and (t2 == t or t2 + 1 == t):
+                covers = True
+                
+            if covers:
+                k_room = (sec, cc, etype, d, t2, room)
+                if k_room in lab_room:
+                    model.Add(lab_room[k_room] == 0)
+
+    return lab_room
 
 def add_friday_half_day(model, x1, x2, section_courses):
     """
@@ -697,8 +782,8 @@ def add_faculty_morning_penalty(model, x1, x2, faculty_assignments):
                     if k1 in x1:
                         morning_vars.append(x1[k1])
                 # Blocks starting in the morning
-                # 0, 1, 2 are all strictly morning blocks (covering S1-S2, S2-S3, S3-S4)
-                for t in [0, 1, 2]:
+                # 0, 2 are strictly morning blocks (covering S1-S2, S3-S4)
+                for t in [0, 2]:
                     for etype in ("T", "P"):
                         k2 = (sec, cc, etype, d, t)
                         if k2 in x2:
