@@ -34,6 +34,8 @@ from engine.constraints import (
     add_global_lab_capacity,
     add_friday_half_day,
     add_faculty_morning_penalty,
+    add_morning_first,
+    add_no_empty_days,
 )
 
 DAYS_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
@@ -442,6 +444,8 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     add_faculty_break(model, x1, x2, faculty_assignments)
     add_global_lab_capacity(model, x2, section_courses, course_info, mappings["pg_sections"])
     add_friday_half_day(model, x1, x2, section_courses)
+    add_morning_first(model, x1, x2, section_courses)
+    add_no_empty_days(model, x1, x2, section_courses)
 
     # Special subject constraints
     if mappings["oe_codes"]:

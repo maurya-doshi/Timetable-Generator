@@ -272,15 +272,79 @@ def add_no_student_gaps(model, x1, x2, section_courses):
                             k_prev = (sec, cc, etype, d, t - 1)
                             if k_prev in x2: terms.append(x2[k_prev])
                             
-                # is_active = 1 if terms > 0 else 0
+                # is_active = 1 if any term is 1, else 0
                 is_active = model.NewBoolVar(f"active_{sec}_d{d}_t{t}")
-                model.AddMaxEquality(is_active, terms)
+                if terms:
+                    model.AddMaxEquality(is_active, terms)
+                else:
+                    model.Add(is_active == 0)
                 active.append(is_active)
                 
             # Constraint: if slot t is empty, slot t+1 MUST be empty.
             # Equivalently: if slot t+1 is active, slot t MUST be active.
             for t in range(NUM_SLOTS - 1):
                 model.AddImplication(active[t+1], active[t])
+
+
+# ===================================================================
+# H4.5 — Morning-first: ALL morning slots (S1-S4) must be filled every day
+# ===================================================================
+def add_morning_first(model, x1, x2, section_courses):
+    """
+    Hard constraint: For every section on every day (Mon-Fri), each of the
+    4 morning slots (S1-S4, indices 0-3) MUST have a class. This is
+    unconditional — morning is always fully occupied. Afternoon slots are
+    only used for overflow once all 20 morning slots/week are taken.
+    """
+    for sec, courses in section_courses.items():
+        for d in range(NUM_DAYS):
+            for t in MORNING_SLOTS:  # [0, 1, 2, 3]
+                # Collect every variable that makes this slot occupied
+                terms = []
+                for cc in courses:
+                    # 1-slot lecture
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1:
+                        terms.append(x1[k1])
+                    # 2-slot block starting at t (covers t and t+1)
+                    for etype in ("T", "P"):
+                        k_start = (sec, cc, etype, d, t)
+                        if k_start in x2:
+                            terms.append(x2[k_start])
+                        # 2-slot block starting at t-1 (covers t-1 and t)
+                        if t > 0:
+                            k_prev = (sec, cc, etype, d, t - 1)
+                            if k_prev in x2:
+                                terms.append(x2[k_prev])
+
+                # At least one course must occupy this morning slot
+                if terms:
+                    model.Add(sum(terms) >= 1)
+
+
+# ===================================================================
+# H4.6 — No empty days (every day must have at least one class)
+# ===================================================================
+def add_no_empty_days(model, x1, x2, section_courses):
+    """
+    For every section, every day (Monday–Friday) must have at least one
+    teaching event (lecture, tutorial, or practical). No day can be blank.
+    """
+    for sec, courses in section_courses.items():
+        for d in range(NUM_DAYS):
+            day_terms = []
+            for cc in courses:
+                for t in range(NUM_SLOTS):
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1:
+                        day_terms.append(x1[k1])
+                for t in VALID_BLOCK_STARTS:
+                    for etype in ("T", "P"):
+                        k2 = (sec, cc, etype, d, t)
+                        if k2 in x2:
+                            day_terms.append(x2[k2])
+            if day_terms:
+                model.Add(sum(day_terms) >= 1)
 
 
 # ===================================================================
