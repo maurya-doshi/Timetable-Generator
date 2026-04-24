@@ -156,28 +156,28 @@ if fac_tt:
             )
 
 # -----------------------------------------------------------------------
-# Save to database
+# Export to PDF
 # -----------------------------------------------------------------------
 st.divider()
 if timetables:
-    col_save, col_clear = st.columns(2)
-    with col_save:
-        if st.button("💾 Save Timetable to Database", type="primary"):
-            try:
-                tt_col = db["timetables"]
-                doc = {
-                    "semester": semester.lower(),
-                    "status": status,
-                    "section_timetables": timetables,
-                    "faculty_timetables": fac_tt,
-                    "stats": stats,
-                }
-                tt_col.delete_many({"semester": semester.lower()})
-                tt_col.insert_one(doc)
-                st.success("✅ Timetable saved to database!")
-            except Exception as e:
-                st.error(f"Failed to save: {e}")
+    col_export, col_clear = st.columns(2)
+    with col_export:
+        try:
+            from engine.pdf_export import create_timetables_pdf
+            pdf_bytes = create_timetables_pdf(timetables, fac_tt)
+            
+            st.download_button(
+                label="📄 Export to PDF",
+                data=pdf_bytes,
+                file_name=f"Timetables_{semester}.pdf",
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"Failed to generate PDF: {e}")
+            
     with col_clear:
-        if st.button("🗑️ Clear Results"):
+        if st.button("🗑️ Clear Results", use_container_width=True):
             del st.session_state["solver_result"]
             st.rerun()
