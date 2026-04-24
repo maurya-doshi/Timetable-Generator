@@ -18,6 +18,7 @@ from db import get_db
 from engine.constraints import (
     NUM_DAYS, NUM_SLOTS, VALID_BLOCK_STARTS,
     SLOT_LABEL_TO_IDX, DAY_LABEL_TO_IDX,
+    LAB_ROOMS,
     add_no_faculty_clash,
     add_no_section_clash,
     add_weekly_hours,
@@ -31,7 +32,7 @@ from engine.constraints import (
     add_spread_penalty,
     add_co_faculty_logic,
     add_max_workload,
-    add_global_lab_capacity,
+    add_lab_room_assignment,
     add_friday_half_day,
     add_faculty_morning_penalty,
     add_morning_first,
@@ -321,8 +322,8 @@ def _create_variables(model, section_courses, course_info, faculty_designations)
 # -----------------------------------------------------------------------
 # Solution extraction
 # -----------------------------------------------------------------------
-def _extract_solution(solver, x1, x2, co_fac, section_courses, course_info,
-                      faculty_assignments):
+def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
+                      course_info, faculty_assignments):
     """
     Read solved variable values and build timetable grids.
 
@@ -342,17 +343,32 @@ def _extract_solution(solver, x1, x2, co_fac, section_courses, course_info,
                 for t in range(NUM_SLOTS):
                     key = (sec, cc, d, t)
                     if key in x1 and solver.Value(x1[key]) == 1:
-                        grid[d][t] = f"{cc}\n({name})\n[L]"
+                        # Find assigned room (if any, like for AEC)
+                        room_name = ""
+                        for room in LAB_ROOMS:
+                            rk = (sec, cc, "L", d, t, room)
+                            if rk in lab_room and solver.Value(lab_room[rk]) == 1:
+                                room_name = room
+                                break
+                        room_suffix = f"\n{room_name}" if room_name else ""
+                        grid[d][t] = f"{cc}\n({name})\n[L]{room_suffix}"
             # Blocks
             for d in range(NUM_DAYS):
                 for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
                         key = (sec, cc, etype, d, t)
                         if key in x2 and solver.Value(x2[key]) == 1:
-                            label = "Tutorial" if etype == "T" else "Practical"
                             short = "T" if etype == "T" else "P"
-                            grid[d][t] = f"{cc}\n({name})\n[{short}]"
-                            grid[d][t + 1] = f"{cc}\n({name})\n[{short}]"
+                            # Find assigned room
+                            room_name = ""
+                            for room in LAB_ROOMS:
+                                rk = (sec, cc, etype, d, t, room)
+                                if rk in lab_room and solver.Value(lab_room[rk]) == 1:
+                                    room_name = room
+                                    break
+                            room_suffix = f"\n{room_name}" if room_name else ""
+                            grid[d][t] = f"{cc}\n({name})\n[{short}]{room_suffix}"
+                            grid[d][t + 1] = f"{cc}\n({name})\n[{short}]{room_suffix}"
         section_tt[sec] = grid
 
     # Faculty timetables
@@ -442,7 +458,12 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     add_weekly_hours(model, x1, x2, section_courses, course_info)
     add_no_student_gaps(model, x1, x2, section_courses)
     add_faculty_break(model, x1, x2, faculty_assignments)
-    add_global_lab_capacity(model, x2, section_courses, course_info, mappings["pg_sections"])
+
+    # CSE lab locks — returns blocked (room, day, slot) tuples
+    _blocked = add_cse_lab_locks(model, x1, x2, mappings["lab_alloc"])
+
+    lab_room = add_lab_room_assignment(model, x1, x2, section_courses, course_info,
+                                       mappings["pg_sections"], _blocked)
     add_friday_half_day(model, x1, x2, section_courses)
     add_morning_first(model, x1, x2, section_courses)
     add_no_empty_days(model, x1, x2, section_courses)
@@ -459,8 +480,6 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     if mappings["maths_slots"]:
         add_maths_locks(model, x1, x2, mappings["maths_slots"])
 
-    # CSE lab locks (returns blocked room-slots, useful for future room modeling)
-    _blocked = add_cse_lab_locks(model, x1, x2, mappings["lab_alloc"])
 
     # Soft constraints (objective)
     penalties = add_spread_penalty(model, x1, x2, section_courses)
@@ -507,7 +526,7 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
 
     if status_code in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         result["timetables"], result["faculty_timetables"] = _extract_solution(
-            solver, x1, x2, co_fac, section_courses, course_info,
+            solver, x1, x2, co_fac, lab_room, section_courses, course_info,
             mappings["faculty_assignments"]
         )
     elif status_code == cp_model.INFEASIBLE:

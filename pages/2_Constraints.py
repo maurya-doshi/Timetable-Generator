@@ -190,8 +190,8 @@ Add a row for each required lab session.
 
 # Define available lab rooms and sections
 lab_rooms = ["CSE Lab 1", "CSE Lab 2", "CSE Lab 3", "CSE Lab 4"]
-first_second_sections = ["1A", "1B", "1C", "2A", "2B", "2C"]
-days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+first_second_sections = ["1A", "1B", "1C", "1K", "2A", "2B", "2C", "2K"]
+days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 slots = [
     "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)", 
     "S4 (12:00 - 12:50)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
@@ -243,3 +243,15 @@ if st.button("💾 Save Constraints", type="primary"):
         st.success("✅ Constraint mappings updated successfully in the database!")
     except Exception as e:
         st.warning(f"⚠️ Database offline or error: {e}. Constraints were not saved, but the UI is functioning!", icon="⚠️")
+
+if st.button("🗑️ Delete Constraints"):
+    try:
+        constraints_col = db["constraints"]
+        result = constraints_col.delete_one({"type": "special_subjects"})
+        if result.deleted_count:
+            st.success("✅ Constraints deleted.")
+        else:
+            st.info("No saved constraints to delete.")
+        st.rerun()
+    except Exception as e:
+        st.error(f"❌ Failed to delete: {e}")
