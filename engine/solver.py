@@ -46,6 +46,8 @@ SLOTS_LABELS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7"]
 # Helper: semester string → sections
 # -----------------------------------------------------------------------
 _SEMESTER_SECTIONS = {
+    "1": ["1A", "1B", "1C", "1K"],
+    "2": ["2A", "2B", "2C", "2K"],
     "3": ["3A", "3B", "3C", "3D"],
     "4": ["4A", "4B", "4C", "4D"],
     "5": ["5A", "5B", "5C", "5D"],
@@ -58,12 +60,34 @@ _SEMESTER_SECTIONS = {
 def _sections_for_semester(sem_str: str) -> list[str]:
     """Map a semester string (from course/faculty data) to section list."""
     s = str(sem_str).strip()
+    
+    # 1. Exact match for a whole semester (e.g. "3" -> ["3A", "3B", "3C", "3D"])
     if s in _SEMESTER_SECTIONS:
         return _SEMESTER_SECTIONS[s]
-    # Try common variants
+        
     for key in _SEMESTER_SECTIONS:
         if s.lower() == key.lower():
             return _SEMESTER_SECTIONS[key]
+            
+    # 2. Check if it's a comma-separated list of specific sections (e.g. "3A", "3A, 3B")
+    all_sections = set()
+    for secs in _SEMESTER_SECTIONS.values():
+        all_sections.update(secs)
+        
+    parsed_sections = []
+    # Replace slashes with commas to support "3A/3B" formats too
+    parts = [p.strip() for p in s.replace('/', ',').split(',')]
+    for part in parts:
+        part_upper = part.upper()
+        # Find matching section ignoring case
+        match = next((sec for sec in all_sections if sec.upper() == part_upper), None)
+        if match:
+            if match not in parsed_sections:
+                parsed_sections.append(match)
+            
+    if parsed_sections:
+        return parsed_sections
+        
     return []
 
 
