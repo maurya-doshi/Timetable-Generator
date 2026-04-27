@@ -18,7 +18,7 @@ st.markdown(
     | Sr No. | Name | Designation | Subject |       |       |       |       |       | Lab   |       |       |       | ... |
     |--------|------|-------------|---------|-------|-------|-------|-------|-------|-------|-------|-------|-------|-----|
     |        |      |             | S1      | Sem S1| S2    | Sem S2| S3    | Sem S3| L1    | Sem L1| L2    | Sem L2| ... |
-    | 1      | ...  | ...         | CS301   | 3     | CS302 | 3A, 3B| ...   | ...   | ...   | ...   | ...   | ...   | ... |
+    | 1      | ...  | ...         | CS301   | 3     | CS302 | 3A    | CS302 | 3B    | ...   | ...   | ...   | ...   | ... |
 
     *(**Note**: In the `Sem` columns, you can specify exact sections like `3A` or `3A, 3B` to assign faculty to specific sections. If you just put the semester number like `3`, the system will automatically distribute teachers round-robin across all sections.)*
 
