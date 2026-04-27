@@ -409,28 +409,28 @@ def add_faculty_break(model, x1, x2, faculty_assignments):
 # ===================================================================
 def add_oe_concurrency(model, x1, section_courses, oe_course_codes):
     """
-    For each OE course, all sections that take it must have their lectures
-    at exactly the same (day, slot) combinations. This means if 5A has
-    OE-X at (Mon S2, Wed S3, Fri S1), then 5B/5C/5D also have OE-X at
-    those exact slots.
-    
-    This works for any L value (L=1, L=3, etc.).
+    For each OE course, lock its lectures to exactly Monday, Tuesday, 
+    and Wednesday at Slot 5 (1:45 - 2:40).
     """
+    # Days: Mon=0, Tue=1, Wed=2. Slot 5 is index 4.
+    target_slots = [(0, 4), (1, 4), (2, 4)]
+    
     for cc in oe_course_codes:
-        # Find all sections that have this OE course
-        relevant_secs = [s for s in section_courses if cc in section_courses.get(s, [])]
-        if len(relevant_secs) <= 1:
-            continue
-        
-        # Pick the first section as the reference — all others must match it
-        ref = relevant_secs[0]
-        for sec in relevant_secs[1:]:
-            for d in range(NUM_DAYS):
-                for t in range(NUM_SLOTS):
-                    k_ref = (ref, cc, d, t)
-                    k_sec = (sec, cc, d, t)
-                    if k_ref in x1 and k_sec in x1:
-                        model.Add(x1[k_ref] == x1[k_sec])
+        for sec, courses in section_courses.items():
+            if cc in courses:
+                # 1. Force the target slots to be 1 (scheduled)
+                for d, t in target_slots:
+                    key = (sec, cc, d, t)
+                    if key in x1:
+                        model.Add(x1[key] == 1)
+                        
+                # 2. Force all other slots to be 0 (not scheduled)
+                for d in range(NUM_DAYS):
+                    for t in range(NUM_SLOTS):
+                        if (d, t) not in target_slots:
+                            key = (sec, cc, d, t)
+                            if key in x1:
+                                model.Add(x1[key] == 0)
 
 
 # ===================================================================

@@ -74,7 +74,7 @@ with ug_tab:
     
     col1, col2 = st.columns(2)
     with col1:
-        st.info("**Open Electives (OE)**\n\n*(Scheduled concurrently on **Monday, 5th Slot** for 5th/6th/7th Sem)*")
+        st.info("**Open Electives (OE)**\n\n*(Scheduled concurrently on **Monday, Tuesday, Wednesday, 5th Slot** for 5th/6th/7th Sem)*")
         if computed_oe_display:
             st.dataframe(pd.DataFrame({"Course Name & Semester": computed_oe_display}), use_container_width=True, hide_index=True)
         else:
