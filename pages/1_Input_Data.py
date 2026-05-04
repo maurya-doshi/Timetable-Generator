@@ -10,7 +10,6 @@ st.title("📋 Input Data — Faculty & Subject Allocation")
 st.markdown(
     """
     Upload an **Excel file** (`.xlsx`) containing **two sheets**:
-
     1. **Faculty_Assignments** – faculty allotment (two‑row header format)
     2. **Courses** – course details with L/T/P, lab flags, and elective info
 
@@ -66,17 +65,17 @@ def parse_faculty_sheet(ws):
     col_idx = 3  # skip first three columns (Sr No., Name, Designation)
     while col_idx < len(sub_header):
         cell_val = str(sub_header[col_idx]).strip() if sub_header[col_idx] else ""
-        if cell_val.startswith("S") and not cell_val.startswith("Sem"):
+        if cell_val.startswith("S") and not (cell_val.startswith("Sem") or cell_val.startswith("Class")):
             if col_idx + 1 < len(sub_header):
-                semester_val = str(sub_header[col_idx + 1]).strip() if sub_header[col_idx + 1] else ""
-                if "Sem" in semester_val:
+                semester_val = str(sub_header[col_idx + 1]).strip().lower() if sub_header[col_idx + 1] else ""
+                if "sem" in semester_val or "class" in semester_val:
                     subject_cols.append((col_idx, col_idx + 1))
                     col_idx += 2
                     continue
         elif cell_val.startswith("L"):
             if col_idx + 1 < len(sub_header):
-                semester_val = str(sub_header[col_idx + 1]).strip() if sub_header[col_idx + 1] else ""
-                if "Sem" in semester_val:
+                semester_val = str(sub_header[col_idx + 1]).strip().lower() if sub_header[col_idx + 1] else ""
+                if "sem" in semester_val or "class" in semester_val:
                     lab_cols.append((col_idx, col_idx + 1))
                     col_idx += 2
                     continue
