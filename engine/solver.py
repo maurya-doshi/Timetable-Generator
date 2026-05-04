@@ -191,14 +191,20 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
     # Add MATHS to course_info with enough L hours
     if maths_sections:
         # Count how many maths slots per section (assume all sections same)
-        maths_per_section: dict[str, int] = {}
+        maths_per_section_L: dict[str, int] = {}
+        maths_per_section_T: dict[str, int] = {}
         for entry in maths_slots:
             cls = entry.get("Class", "")
+            fac = entry.get("Faculty", "")
             if cls:
-                maths_per_section[cls] = maths_per_section.get(cls, 0) + 1
-        max_maths = max(maths_per_section.values()) if maths_per_section else 0
+                if "TUT" in fac.upper():
+                    maths_per_section_T[cls] = maths_per_section_T.get(cls, 0) + 1
+                else:
+                    maths_per_section_L[cls] = maths_per_section_L.get(cls, 0) + 1
+        max_maths_L = max(maths_per_section_L.values()) if maths_per_section_L else 0
+        max_maths_T = max(maths_per_section_T.values()) if maths_per_section_T else 0
         course_info["MATHS"] = {
-            "L": max_maths, "T": 0, "P": 0,
+            "L": max_maths_L, "T": max_maths_T, "P": 0,
             "semester": "", "course_name": "Mathematics",
             "lecture_in_lab": "No", "tutorial_in_lab": "No",
             "elective": "No",
@@ -264,6 +270,65 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
 
     aec_names = constraints_doc.get("aec", [])
     aec_codes = set(name_to_code.get(n, n) for n in aec_names)
+
+    # --- Group Parallel Electives into a Single Variable ---
+    def group_parallel_electives(elective_codes, prefix_label):
+        sem_groups = {}
+        for code in elective_codes:
+            if code in course_info:
+                sem = course_info[code].get("semester", "")
+                if sem:
+                    sem_groups.setdefault(sem, []).append(code)
+                    
+        new_codes = set()
+        for sem, codes in sem_groups.items():
+            if len(codes) > 1:
+                pseudo_code = f"CS{prefix_label}_SEM{sem}"
+                new_codes.add(pseudo_code)
+                
+                # Take the first course's L, T, P for the pseudo course
+                first_course = course_info[codes[0]]
+                course_info[pseudo_code] = {
+                    "course_code": pseudo_code,
+                    "course_name": f"{prefix_label} (Parallel Group)",
+                    "L": first_course.get("L", 0),
+                    "T": first_course.get("T", 0),
+                    "P": first_course.get("P", 0),
+                    "semester": sem,
+                    "lecture_in_lab": "No",
+                    "tutorial_in_lab": "No",
+                    "elective": "Yes"
+                }
+                
+                # Replace in section_courses
+                for sec, courses in section_courses.items():
+                    if sec.startswith(sem):
+                        filtered = [c for c in courses if c not in codes]
+                        if len(filtered) < len(courses):
+                            filtered.append(pseudo_code)
+                        section_courses[sec] = filtered
+                        
+                # Replace in faculty_assignments
+                for fac, assigns in faculty_assignments.items():
+                    new_assigns = []
+                    for (sec, cc) in assigns:
+                        if cc in codes and sec.startswith(sem):
+                            new_assigns.append((sec, pseudo_code))
+                        else:
+                            new_assigns.append((sec, cc))
+                    faculty_assignments[fac] = list(dict.fromkeys(new_assigns))
+            elif len(codes) == 1:
+                new_codes.add(codes[0])
+                
+        # Also include any codes that were not found in course_info (keep as is)
+        for code in elective_codes:
+            if code not in course_info:
+                new_codes.add(code)
+                
+        return new_codes
+
+    oe_codes = group_parallel_electives(oe_codes, "OE")
+    aec_codes = group_parallel_electives(aec_codes, "AEC")
 
     pg_core_name = constraints_doc.get("pg_shared_core")
     pg_core_code = name_to_code.get(pg_core_name, pg_core_name) if pg_core_name else None

@@ -298,6 +298,8 @@ def add_morning_first(model, x1, x2, section_courses):
     """
     for sec, courses in section_courses.items():
         for d in range(NUM_DAYS):
+            if sec.startswith("7") and d == 4:
+                continue # EXEMPT 7th sem from Friday classes
             for t in MORNING_SLOTS:  # [0, 1, 2, 3]
                 # Collect every variable that makes this slot occupied
                 terms = []
@@ -332,6 +334,8 @@ def add_no_empty_days(model, x1, x2, section_courses):
     """
     for sec, courses in section_courses.items():
         for d in range(NUM_DAYS):
+            if sec.startswith("7") and d == 4:
+                continue # EXEMPT 7th sem from Friday classes
             day_terms = []
             for cc in courses:
                 for t in range(NUM_SLOTS):
@@ -538,7 +542,7 @@ SLOT_LABEL_TO_IDX = {
 }
 DAY_LABEL_TO_IDX = {
     "Monday": 0, "Tuesday": 1, "Wednesday": 2,
-    "Thursday": 3, "Friday": 4,
+    "Thursday": 3, "Friday": 4, "Saturday": 5,
 }
 
 
@@ -749,23 +753,30 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
 def add_friday_half_day(model, x1, x2, section_courses):
     """
     Friday (Day 4) slots S5, S6, S7 (Slots 4, 5, 6) must be completely empty.
+    For 7th Semester sections, the ENTIRE Friday is empty.
     """
     DAY_FRI = 4
     for sec, courses in section_courses.items():
+        is_7th_sem = sec.startswith("7")
         for cc in courses:
-            # Block Lectures in S5, S6, S7
-            for t in AFTERNOON_SLOTS:
+            slots_to_block = range(NUM_SLOTS) if is_7th_sem else AFTERNOON_SLOTS
+            for t in slots_to_block:
                 k1 = (sec, cc, DAY_FRI, t)
                 if k1 in x1:
                     model.Add(x1[k1] == 0)
                     
-            # Block 2-slot blocks that touch S5, S6, S7
-            # If a block starts at t=4 (S5) or t=5 (S6), it falls in the afternoon.
-            for t in [4, 5]:
-                for etype in ("T", "P"):
-                    k2 = (sec, cc, etype, DAY_FRI, t)
-                    if k2 in x2:
-                        model.Add(x2[k2] == 0)
+            if is_7th_sem:
+                for t in VALID_BLOCK_STARTS:
+                    for etype in ("T", "P"):
+                        k2 = (sec, cc, etype, DAY_FRI, t)
+                        if k2 in x2:
+                            model.Add(x2[k2] == 0)
+            else:
+                for t in [4, 5]:
+                    for etype in ("T", "P"):
+                        k2 = (sec, cc, etype, DAY_FRI, t)
+                        if k2 in x2:
+                            model.Add(x2[k2] == 0)
 
 def add_faculty_morning_penalty(model, x1, x2, faculty_assignments):
     """
