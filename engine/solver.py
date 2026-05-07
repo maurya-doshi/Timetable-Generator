@@ -24,12 +24,14 @@ from engine.constraints import (
     add_weekly_hours,
     add_no_student_gaps,
     add_faculty_break,
+    add_co_faculty_break,      # TEMPORARY FIX — H5.5
     add_oe_concurrency,
     add_aec_concurrency,
     add_pg_shared,
     add_maths_locks,
     add_cse_lab_locks,
     add_spread_penalty,
+    add_first_slot_repeat_penalty,
     add_co_faculty_logic,
     add_max_workload,
     add_lab_room_assignment,
@@ -38,6 +40,18 @@ from engine.constraints import (
     add_morning_first,
     add_no_empty_days,
 )
+
+# ---------------------------------------------------------------------------
+# TEMPORARY FIX FLAGS — set to False to revert individual fixes
+# ---------------------------------------------------------------------------
+# Fix A: Exclude co-faculty slots from the primary workload cap.
+#        Prevents co-faculty duty from crowding out a faculty's own lectures.
+EXCLUDE_COFAC_FROM_WORKLOAD_CAP: bool = True
+
+# Fix B: Enforce a 1-slot break between primary teaching and co-faculty blocks.
+#        Prevents faculty being co-faculty immediately before/after their lectures.
+ENABLE_CO_FACULTY_BREAK: bool = True
+# ---------------------------------------------------------------------------
 
 DAYS_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 SLOTS_LABELS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7"]
@@ -161,17 +175,19 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
         ug_pg = str(info.get("ug_pg", "UG")).strip().upper()
         
         if ug_pg == "PG":
-            # For testing, we only load 3rd sem PG to avoid overloading SP1/SP2 with 1st sem
-            if sem != "3":
+            # Only schedule PG 1st and 2nd sem; skip 3rd and 4th sem
+            if sem not in ("1", "2"):
                 continue
-                
+
+            _ordinal = {"1": "1st", "2": "2nd"}
+            label = f"PG {_ordinal[sem]} Sem"
             sections = []
             is_common = (code in pg_pe_codes) or (code == pg_core_code)
             # Route MCS to SP1, MCN to SP2. Shared subjects go to both.
             if "MCS" in code or is_common:
-                sections.append("PG 3rd Sem - SP1")
+                sections.append(f"{label} - SP1")
             if "MCN" in code or is_common:
-                sections.append("PG 3rd Sem - SP2")
+                sections.append(f"{label} - SP2")
         else:
             sections = _sections_for_semester(sem)
             
@@ -421,12 +437,24 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
         faculty_timetables: {faculty: [[cell, ...] * 7] * 5}
     """
     # Section timetables
+    # Build reverse lookup: (sec, cc) -> faculty name(s) for display in class timetables
+    sec_cc_to_faculty: dict[tuple, str] = {}
+    for fac_name, assignments in faculty_assignments.items():
+        for sec, cc in assignments:
+            existing = sec_cc_to_faculty.get((sec, cc))
+            if existing:
+                sec_cc_to_faculty[(sec, cc)] = f"{existing} / {fac_name}"
+            else:
+                sec_cc_to_faculty[(sec, cc)] = fac_name
+
     section_tt = {}
     for sec in section_courses:
         grid = [["" for _ in range(NUM_SLOTS)] for _ in range(NUM_DAYS)]
         for cc in section_courses[sec]:
             info = course_info.get(cc, {})
             name = info.get("course_name", cc)
+            fac_label = sec_cc_to_faculty.get((sec, cc), "")
+            fac_suffix = f"\n{fac_label}" if fac_label else ""
             # Lectures
             for d in range(NUM_DAYS):
                 for t in range(NUM_SLOTS):
@@ -440,7 +468,7 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                                 room_name = room
                                 break
                         room_suffix = f"\n{room_name}" if room_name else ""
-                        grid[d][t] = f"{cc}\n({name})\n[L]{room_suffix}"
+                        grid[d][t] = f"{cc}\n({name})\n[L]{fac_suffix}{room_suffix}"
             # Blocks
             for d in range(NUM_DAYS):
                 for t in VALID_BLOCK_STARTS:
@@ -456,8 +484,8 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                                     room_name = room
                                     break
                             room_suffix = f"\n{room_name}" if room_name else ""
-                            grid[d][t] = f"{cc}\n({name})\n[{short}]{room_suffix}"
-                            grid[d][t + 1] = f"{cc}\n({name})\n[{short}]{room_suffix}"
+                            grid[d][t] = f"{cc}\n({name})\n[{short}]{fac_suffix}{room_suffix}"
+                            grid[d][t + 1] = f"{cc}\n({name})\n[{short}]{fac_suffix}{room_suffix}"
         section_tt[sec] = grid
 
     # Faculty timetables
@@ -542,11 +570,14 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     # Hard constraints
     add_no_faculty_clash(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["pg_core_code"], mappings["pg_sections"])
     add_co_faculty_logic(model, x2, co_fac, mappings["faculty_assignments"])
-    add_max_workload(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["faculty_designations"], semester)
+    add_max_workload(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["faculty_designations"],
+                     semester, count_cofac_in_workload=not EXCLUDE_COFAC_FROM_WORKLOAD_CAP)
     add_no_section_clash(model, x1, x2, section_courses)
     add_weekly_hours(model, x1, x2, section_courses, course_info)
     add_no_student_gaps(model, x1, x2, section_courses)
-    add_faculty_break(model, x1, x2, faculty_assignments)
+    add_faculty_break(model, x1, x2, faculty_assignments, co_fac=co_fac)
+    if ENABLE_CO_FACULTY_BREAK:  # TEMPORARY FIX
+        add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments)
 
     # CSE lab locks — returns blocked (room, day, slot) tuples
     _blocked = add_cse_lab_locks(model, x1, x2, mappings["lab_alloc"])
@@ -573,6 +604,7 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     # Soft constraints (objective)
     penalties = add_spread_penalty(model, x1, x2, section_courses)
     penalties.extend(add_faculty_morning_penalty(model, x1, x2, mappings["faculty_assignments"]))
+    penalties.extend(add_first_slot_repeat_penalty(model, x1, x2, section_courses))
     
     # Soft Penalty: Co-faculty mismatch (penalize if fac_name doesn't normally teach this course code)
     # Build a set of course codes each faculty teaches
@@ -593,6 +625,7 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit_seconds
     solver.parameters.num_workers = 8  # use multiple cores
+    solver.parameters.log_search_progress = True
 
     status_code = solver.Solve(model)
 

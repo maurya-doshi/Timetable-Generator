@@ -122,12 +122,19 @@ def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
                         if cf_name == fac_name:
                             model.Add(var == 0)
 
-def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designations, semester="odd"):
+def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designations,
+                     semester="odd", count_cofac_in_workload=True):
     """
     Enforces Maximum Workload Units per faculty.
     1 L, T, or P block = 2 units.
     Limits (Odd): Prof=18, Assoc=24, Assist=28
     Limits (Even): Prof=14, Assoc=18, Assist=24
+
+    count_cofac_in_workload (TEMPORARY FIX flag):
+        True  → original behaviour: co-faculty slots count toward the cap.
+        False → co-faculty slots are excluded from the cap so they don't
+                crowd out primary teaching assignments.
+        Revert: set EXCLUDE_COFAC_FROM_WORKLOAD_CAP = False in solver.py.
     """
     if semester.lower() == "odd":
         limits = {"Professor": 18, "Associate": 24, "Assistant": 28}
@@ -153,10 +160,11 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
                         if k2 in x2:
                             events.append(x2[k2])
                             
-        # Co-faculty blocks (2 slots = 2 units)
-        for (fac_name, sec, cc, d, t), var in co_fac.items():
-            if fac_name == fac:
-                events.append(var)
+        # Co-faculty blocks — only count toward cap if flag is True
+        if count_cofac_in_workload:
+            for (fac_name, sec, cc, d, t), var in co_fac.items():
+                if fac_name == fac:
+                    events.append(var)
                 
         # Total units = sum(events) * 2
         # sum(events) * 2 <= max_units  =>  sum(events) <= max_units // 2
@@ -297,9 +305,14 @@ def add_morning_first(model, x1, x2, section_courses):
     only used for overflow once all 20 morning slots/week are taken.
     """
     for sec, courses in section_courses.items():
+        # PG sections have fewer total course-hours than UG sections and
+        # cannot reliably fill all 4 morning slots every day — exempt them.
+        is_pg = "PG" in sec or "SP" in sec
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d == 4:
                 continue # EXEMPT 7th sem from Friday classes
+            if is_pg:
+                continue  # EXEMPT PG sections from mandatory morning fill
             for t in MORNING_SLOTS:  # [0, 1, 2, 3]
                 # Collect every variable that makes this slot occupied
                 terms = []
@@ -320,6 +333,7 @@ def add_morning_first(model, x1, x2, section_courses):
                                 terms.append(x2[k_prev])
 
                 # At least one course must occupy this morning slot
+                # Skip sections that don't have enough vars (e.g. PG sections with fewer courses)
                 if terms:
                     model.Add(sum(terms) >= 1)
 
@@ -354,17 +368,16 @@ def add_no_empty_days(model, x1, x2, section_courses):
 # ===================================================================
 # H5 — Faculty gap after teaching
 # ===================================================================
-def add_faculty_break(model, x1, x2, faculty_assignments):
+def add_faculty_break(model, x1, x2, faculty_assignments, co_fac=None):
     """
-    After any teaching event, faculty must have ≥1 free slot before next event.
+    After any primary teaching event, faculty must have ≥1 free slot before
+    their next primary event.
 
-    Implementation: for each faculty, day — track which slots have a new event
-    starting and ensure no event starts in the slot immediately following the
-    end of any event.
+    Rules enforced:
+      1. Primary lecture at t → no primary event starts at t+1.
+      2. Primary block ending at t (started t-1) → no primary event starts at t+1.
 
-    Simpler formulation: for each faculty, day, slot t:
-        if faculty is busy at slot t via a LECTURE → slot t+1 must be free
-        if faculty is busy at slot t via end of a BLOCK (started at t-1) → slot t+1 free
+    Note: the co-fac ↔ primary break is handled separately by add_co_faculty_break.
     """
     for fac, assignments in faculty_assignments.items():
         for d in range(NUM_DAYS):
@@ -376,7 +389,7 @@ def add_faculty_break(model, x1, x2, faculty_assignments):
                     if key1 in x1:
                         lec_terms.append(x1[key1])
 
-                # Collect block vars that END at slot t (started at t-1)
+                # Collect primary block vars that END at slot t (started at t-1)
                 block_end_terms = []
                 if t > 0:
                     for sec, cc in assignments:
@@ -385,7 +398,7 @@ def add_faculty_break(model, x1, x2, faculty_assignments):
                             if key_prev in x2:
                                 block_end_terms.append(x2[key_prev])
 
-                # All terms that could START at slot t+1
+                # All primary terms that could START at slot t+1
                 if t + 1 < NUM_SLOTS:
                     next_start_terms = []
                     for sec, cc in assignments:
@@ -397,15 +410,87 @@ def add_faculty_break(model, x1, x2, faculty_assignments):
                             if key_next_block in x2:
                                 next_start_terms.append(x2[key_next_block])
 
-                    # After a lecture at t → nothing starts at t+1
+                    # Rule 1: After a primary lecture at t → nothing primary starts at t+1
                     for lv in lec_terms:
                         for nv in next_start_terms:
                             model.Add(lv + nv <= 1)
 
-                    # After a block ending at t → nothing starts at t+1
+                    # Rule 2: After a primary block ending at t → nothing primary starts at t+1
                     for bv in block_end_terms:
                         for nv in next_start_terms:
                             model.Add(bv + nv <= 1)
+
+
+# ===================================================================
+# H5.5 — Co-faculty adjacency break (TEMPORARY FIX)
+# ===================================================================
+def add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments):
+    """
+    TEMPORARY FIX: Ensures a 1-slot gap between a faculty's primary teaching
+    events and any co-faculty practical blocks they are assigned to.
+
+    Rules:
+      A) After a primary event ends at slot t → co-fac block cannot START at t+1.
+      B) After a co-fac block ends at t+1 (started at t) → no primary event
+         can START at t+2.
+
+    To revert: set ENABLE_CO_FACULTY_BREAK = False in solver.py.
+    """
+    from collections import defaultdict
+
+    # Build fast lookup: (fac, d) -> list of (t_start, var)
+    fac_cofac_by_day = defaultdict(list)
+    for (fac_name, sec, cc, d, t_start), var in co_fac.items():
+        fac_cofac_by_day[(fac_name, d)].append((t_start, var))
+
+    for fac, assignments in faculty_assignments.items():
+        for d in range(NUM_DAYS):
+            cofac_today = fac_cofac_by_day.get((fac, d), [])
+            if not cofac_today:
+                continue
+
+            for t in range(NUM_SLOTS):
+                # --- Primary events that END at slot t ---
+                primary_ending_at_t = []
+                for sec, cc in assignments:
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1:
+                        primary_ending_at_t.append(x1[k1])  # lecture at t
+                    if t > 0:
+                        for etype in ("T", "P"):
+                            k_prev = (sec, cc, etype, d, t - 1)
+                            if k_prev in x2:
+                                primary_ending_at_t.append(x2[k_prev])  # block t-1,t
+
+                # Rule A: primary ends at t → no co-fac block starts at t+1
+                if t + 1 < NUM_SLOTS and primary_ending_at_t:
+                    cofac_next = [v for (ts, v) in cofac_today if ts == t + 1]
+                    for pv in primary_ending_at_t:
+                        for cv in cofac_next:
+                            model.Add(pv + cv <= 1)
+
+                # Rule B: co-fac starts at t (ends at t+1) → no primary starts at t+2
+                cofac_at_t = [v for (ts, v) in cofac_today if ts == t]
+                if t + 2 < NUM_SLOTS and cofac_at_t:
+                    primary_starting_t2 = []
+                    for sec, cc in assignments:
+                        k1 = (sec, cc, d, t + 2)
+                        if k1 in x1:
+                            primary_starting_t2.append(x1[k1])
+                        for etype in ("T", "P"):
+                            k2 = (sec, cc, etype, d, t + 2)
+                            if k2 in x2:
+                                primary_starting_t2.append(x2[k2])
+                    for cv in cofac_at_t:
+                        for pv in primary_starting_t2:
+                            model.Add(cv + pv <= 1)
+
+                    # Rule C: co-fac starts at t (ends at t+1) → no OTHER co-fac
+                    #         block starts at t+2 (1-slot break between co-fac duties)
+                    cofac_at_t2 = [v for (ts, v) in cofac_today if ts == t + 2]
+                    for cv1 in cofac_at_t:
+                        for cv2 in cofac_at_t2:
+                            model.Add(cv1 + cv2 <= 1)
 
 
 # ===================================================================
@@ -630,6 +715,65 @@ def add_spread_penalty(model, x1, x2, section_courses):
                     penalties.append(penalty)
     return penalties
 
+
+# ===================================================================
+# S2 — No subject repeated in S1 (first slot) across the week (soft)
+# ===================================================================
+def add_first_slot_repeat_penalty(model, x1, x2, section_courses):
+    """
+    Strongly penalize any subject that occupies slot S1 (t=0, the first
+    slot of the day) on more than one day in the week.
+
+    For each (section, course), we collect the S1 variables across all days:
+      - x1[(sec, cc, d, 0)]            — lecture in S1
+      - x2[(sec, cc, "T"/"P", d, 0)]   — block starting at S1 (covers S1+S2)
+
+    If the sum of those across all days > 1, we apply a penalty weighted
+    at 20 points — much heavier than the 1-point spread penalty — so the
+    solver strongly prefers putting each subject in S1 at most once.
+
+    Returned as a list of (weight * BoolVar) terms for the objective.
+    """
+    WEIGHT = 20
+    weighted_penalties = []
+
+    for sec, courses in section_courses.items():
+        for cc in courses:
+            # Collect all S1 vars across the week for this (sec, course)
+            s1_vars = []
+            for d in range(NUM_DAYS):
+                k1 = (sec, cc, d, 0)
+                if k1 in x1:
+                    s1_vars.append(x1[k1])
+                for etype in ("T", "P"):
+                    k2 = (sec, cc, etype, d, 0)
+                    if k2 in x2:
+                        s1_vars.append(x2[k2])
+
+            # Only meaningful if the subject can appear in S1 on ≥2 days
+            if len(s1_vars) < 2:
+                continue
+
+            # count = number of days this subject occupies S1
+            # extra  = max(0, count - 1) = how many times it repeats in S1
+            # Penalize each extra occurrence with weight WEIGHT.
+            # We model this with auxiliary BoolVars for each pair (d1, d2).
+            # Simpler: penalize sum > 1 via a surplus integer variable.
+            total_s1 = sum(s1_vars)
+
+            # surplus = max(0, total_s1 - 1)
+            # Only the lower bound is needed: since we Minimize(WEIGHT * surplus),
+            # the solver will drive surplus down to exactly max(0, total_s1 - 1).
+            # The equality form would make the model infeasible when total_s1 = 0
+            # (it would require surplus = -1, violating the IntVar floor of 0).
+            surplus = model.NewIntVar(0, len(s1_vars) - 1,
+                                     f"s1_surplus_{sec}_{cc}")
+            model.Add(surplus >= total_s1 - 1)
+
+            weighted_penalties.append(WEIGHT * surplus)
+
+    return weighted_penalties
+
 # ===================================================================
 # Final Time-Based Constraints
 # ===================================================================
@@ -806,8 +950,10 @@ def add_faculty_morning_penalty(model, x1, x2, faculty_assignments):
             model.AddMaxEquality(has_morning_fac, morning_vars)
             
             # Penalize the LACK of morning sessions.
-            # Minimizing (-100 * has_morning_fac) is equivalent to 
-            # reducing the total penalty score by 100 if they DO have a morning session.
-            penalties.append(-100 * has_morning_fac)
+            # Using positive penalties helps the solver's lower-bound proving logic.
+            no_morning = model.NewBoolVar(f"no_morning_{fac}")
+            model.Add(no_morning == 1 - has_morning_fac)
+            
+            penalties.append(100 * no_morning)
             
     return penalties
