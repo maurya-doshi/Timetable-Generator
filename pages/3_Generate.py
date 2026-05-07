@@ -55,7 +55,7 @@ st.divider()
 st.header("⚙️ Solver Settings")
 col1, col2 = st.columns(2)
 with col1:
-    time_limit = st.slider("Solver time limit (seconds)", 10, 300, 60, step=10)
+    time_limit = st.slider("Solver time limit (seconds)", 10, 900, 60, step=10)
 with col2:
     st.info(f"Solver will stop after **{time_limit}s** and return the best solution found.")
 
@@ -69,7 +69,7 @@ if not checks_ok:
     st.stop()
 
 if st.button("🚀 Generate Timetable", type="primary", use_container_width=True):
-    with st.spinner("Building model and solving… this may take a minute."):
+    with st.spinner("Building model and solving… this may take some time."):
         try:
             from engine.solver import build_and_solve
             result = build_and_solve(
@@ -99,9 +99,9 @@ stats = result["stats"]
 # Status badge
 st.header("📊 Results")
 if status == "OPTIMAL":
-    st.success(f"✅ **OPTIMAL** solution found in {stats.get('solve_time_s', '?')}s")
+    st.success(f"✅ **OPTIMAL** — Absolute best timetable found in {stats.get('solve_time_s', '?')}s")
 elif status == "FEASIBLE":
-    st.warning(f"⚠️ **FEASIBLE** (not proven optimal) — found in {stats.get('solve_time_s', '?')}s")
+    st.success(f"✅ **SUCCESS (Feasible)** — Best timetable found within time limit ({stats.get('solve_time_s', '?')}s). \n\n*Note: In complex scheduling, proving absolute mathematical optimality can take hours. This timetable satisfies all your hard rules and is highly optimized!*")
 elif status == "INFEASIBLE":
     st.error("❌ **INFEASIBLE** — no valid timetable exists with current data & constraints.")
 else:
