@@ -68,7 +68,7 @@ if not checks_ok:
     st.warning("⚠️ Fix the issues above before generating.")
     st.stop()
 
-if st.button("🚀 Generate Timetable", type="primary", use_container_width=True):
+if st.button("🚀 Generate Timetable", type="primary", width="stretch"):
     with st.spinner("Building model and solving… this may take some time."):
         try:
             from engine.solver import build_and_solve
@@ -132,7 +132,7 @@ if timetables:
                 df.style.map(
                     lambda v: "background-color: #e8f5e9; color: black;" if v else "background-color: #f5f5f5; color: black;"
                 ),
-                use_container_width=True,
+                width="stretch",
                 height=250,
             )
 
@@ -151,7 +151,7 @@ if fac_tt:
                 df.style.map(
                     lambda v: "background-color: #e3f2fd; color: black;" if v else "background-color: #f5f5f5; color: black;"
                 ),
-                use_container_width=True,
+                width="stretch",
                 height=250,
             )
 
@@ -172,12 +172,12 @@ if timetables:
                 file_name=f"Timetables_{semester}.pdf",
                 mime="application/pdf",
                 type="primary",
-                use_container_width=True
+                width="stretch"
             )
         except Exception as e:
             st.error(f"Failed to generate PDF: {e}")
             
     with col_clear:
-        if st.button("🗑️ Clear Results", use_container_width=True):
+        if st.button("🗑️ Clear Results", width="stretch"):
             del st.session_state["solver_result"]
             st.rerun()

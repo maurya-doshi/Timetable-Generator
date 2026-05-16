@@ -38,6 +38,14 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
 
     faculty_assignments: dict  faculty_name -> list of (section, course_code)
     """
+    from collections import defaultdict
+    # Build a lookup for co_fac variables by (fac_name, day, slot_it_covers)
+    # Since each co_fac block is 2 slots, it covers t and t+1.
+    cofac_lookup = defaultdict(list)
+    for (fac_name, sec, cc, d_var, t_var), var in co_fac.items():
+        cofac_lookup[(fac_name, d_var, t_var)].append(var)
+        cofac_lookup[(fac_name, d_var, t_var + 1)].append(var)
+
     for fac, assignments in faculty_assignments.items():
         for d in range(NUM_DAYS):
             for t in range(NUM_SLOTS):
@@ -80,12 +88,9 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
                                         seen_pg_core_blocks.add(f"prev_{etype}")
                                 else:
                                     terms.append(x2[key_prev])
-                # 2-slot dynamic co-faculty blocks that COVER slot t
-                # If they are assigned as co-faculty starting at t
-                for (fac_name, sec, cc, d_var, t_var), var in co_fac.items():
-                    if fac_name == fac and d_var == d:
-                        if t_var == t or (t > 0 and t_var == t - 1):
-                            terms.append(var)
+                
+                # Use optimized lookup for dynamic co-faculty blocks covering slot t
+                terms.extend(cofac_lookup[(fac, d, t)])
 
                 if len(terms) > 1:
                     model.Add(sum(terms) <= 1)
@@ -136,10 +141,17 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
                 crowd out primary teaching assignments.
         Revert: set EXCLUDE_COFAC_FROM_WORKLOAD_CAP = False in solver.py.
     """
+    from collections import defaultdict
     if semester.lower() == "odd":
         limits = {"Professor": 18, "Associate": 24, "Assistant": 28}
     else:
         limits = {"Professor": 14, "Associate": 18, "Assistant": 24}
+
+    # Pre-calculate co-faculty lookup by faculty name
+    cofac_by_fac = defaultdict(list)
+    if count_cofac_in_workload:
+        for (fac_name, sec, cc, d, t), var in co_fac.items():
+            cofac_by_fac[fac_name].append(var)
 
     for fac, assignments in faculty_assignments.items():
         desig = faculty_designations.get(fac, "Assistant")
@@ -161,14 +173,36 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
                             events.append(x2[k2])
                             
         # Co-faculty blocks — only count toward cap if flag is True
-        if count_cofac_in_workload:
-            for (fac_name, sec, cc, d, t), var in co_fac.items():
-                if fac_name == fac:
-                    events.append(var)
+        events.extend(cofac_by_fac[fac])
                 
         # Total units = sum(events) * 2
         # sum(events) * 2 <= max_units  =>  sum(events) <= max_units // 2
         model.Add(sum(events) <= max_units // 2)
+
+    # --- GLOBAL WORKLOAD CUT ---
+    # Sum of all teaching events across all faculty must be <= sum of all capacities.
+    # This redundant constraint helps the solver's lower-bound proving logic.
+    all_faculty_events = []
+    total_capacity_units = 0
+    for fac, assignments in faculty_assignments.items():
+        desig = faculty_designations.get(fac, "Assistant")
+        total_capacity_units += limits.get(desig, 28) // 2
+        
+        # Primary events
+        for sec, cc in assignments:
+            for d in range(5):
+                for t in range(7):
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1: all_faculty_events.append(x1[k1])
+                    for etype in ("T", "P"):
+                        k2 = (sec, cc, etype, d, t)
+                        if k2 in x2: all_faculty_events.append(x2[k2])
+        # Co-faculty events
+        if count_cofac_in_workload:
+            all_faculty_events.extend(cofac_by_fac[fac])
+
+    if all_faculty_events:
+        model.Add(sum(all_faculty_events) <= total_capacity_units)
 
 
 # ===================================================================
@@ -713,6 +747,11 @@ def add_spread_penalty(model, x1, x2, section_courses):
                     model.Add(total >= 2).OnlyEnforceIf(penalty)
                     model.Add(total <= 1).OnlyEnforceIf(penalty.Not())
                     penalties.append(penalty)
+        
+        # The pigeonhole cut for spread penalties was removed here 
+        # because it could cut off valid solutions where a single day
+        # absorbs multiple events (e.g. 3 events on 1 day).
+
     return penalties
 
 
@@ -849,26 +888,27 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
 
     # Constraint 3: no room double-booking
     # Two events conflict if their occupied slots overlap on the same day+room.
+    
+    # NEW: Build a lookup for events covering each (day, slot)
+    from collections import defaultdict
+    slot_to_events = defaultdict(list)
+    for i, (sec, cc, etype, d2, t2, duration, active_var) in enumerate(needs_room):
+        # Store index i and the room-assignment variable for this event
+        slot_to_events[(d2, t2)].append(i)
+        if duration == 2:
+            slot_to_events[(d2, t2 + 1)].append(i)
+
     for room in LAB_ROOMS:
         for d in range(NUM_DAYS):
             for t in range(NUM_SLOTS):
                 # Collect all room-vars whose event covers slot t
                 covering = []
-                for (sec, cc, etype, d2, t2, duration, active_var) in needs_room:
-                    if d2 != d:
-                        continue
-                    # A 1-slot event at t2 covers t2
-                    # A 2-slot event at t2 covers t2 and t2+1
-                    covers = False
-                    if duration == 1 and t2 == t:
-                        covers = True
-                    elif duration == 2 and (t2 == t or t2 + 1 == t):
-                        covers = True
-                        
-                    if covers:
-                        k_room = (sec, cc, etype, d, t2, room)
-                        if k_room in lab_room:
-                            covering.append(lab_room[k_room])
+                event_indices = slot_to_events[(d, t)]
+                for idx in event_indices:
+                    (sec, cc, etype, d2, t2, duration, active_var) = needs_room[idx]
+                    k_room = (sec, cc, etype, d, t2, room)
+                    if k_room in lab_room:
+                        covering.append(lab_room[k_room])
                             
                 if len(covering) > 1:
                     model.Add(sum(covering) <= 1)
@@ -891,6 +931,39 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
                 k_room = (sec, cc, etype, d, t2, room)
                 if k_room in lab_room:
                     model.Add(lab_room[k_room] == 0)
+
+    # --- ROOM SYMMETRY BREAKING ---
+    # To reduce the search space, if multiple rooms are available at a given time,
+    # force the solver to fill them in order (Room 1, then Room 2, etc.)
+    # This prevents the solver from exploring identical permutations of room assignments.
+    for d in range(NUM_DAYS):
+        for t in range(NUM_SLOTS):
+            room_active = []
+            for i, room in enumerate(LAB_ROOMS):
+                # Is this room occupied at (d, t) by any of our scheduled events?
+                room_vars = []
+                for (sec, cc, etype, d2, t2, duration, active_var) in needs_room:
+                    if d2 == d:
+                        covers = (duration == 1 and t2 == t) or (duration == 2 and (t2 == t or t2 + 1 == t))
+                        if covers:
+                            rk = (sec, cc, etype, d, t2, room)
+                            if rk in lab_room:
+                                room_vars.append(lab_room[rk])
+                
+                is_used = model.NewBoolVar(f"room_used_d{d}_t{t}_{room}")
+                if room_vars:
+                    model.AddMaxEquality(is_used, room_vars)
+                else:
+                    model.Add(is_used == 0)
+                room_active.append(is_used)
+
+            # Symmetry break: room[i] used => room[i-1] used (if not blocked)
+            for i in range(1, len(room_active)):
+                prev_room = LAB_ROOMS[i-1]
+                this_room = LAB_ROOMS[i]
+                # Only apply if neither room is blocked by a 1st/2nd sem lock
+                if (prev_room, d, t) not in blocked_room_slots and (this_room, d, t) not in blocked_room_slots:
+                    model.AddImplication(room_active[i], room_active[i-1])
 
     return lab_room
 
@@ -954,6 +1027,6 @@ def add_faculty_morning_penalty(model, x1, x2, faculty_assignments):
             no_morning = model.NewBoolVar(f"no_morning_{fac}")
             model.Add(no_morning == 1 - has_morning_fac)
             
-            penalties.append(100 * no_morning)
+            penalties.append(30 * no_morning)
             
     return penalties
