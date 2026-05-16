@@ -612,20 +612,43 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     for fac, assigns in mappings["faculty_assignments"].items():
         fac_taught_courses[fac] = {cc for (_, cc) in assigns}
         
+    # Aggregate mismatch penalties by faculty to simplify the objective landscape
+    from collections import defaultdict
+    fac_mismatch_vars = defaultdict(list)
+    all_mismatch_vars = []
     for (fac_name, sec, cc, d, t), var in co_fac.items():
         taught = fac_taught_courses.get(fac_name, set())
         if cc not in taught:
-            # Add a penalty of 10 for every slot they are mismatched
-            penalties.append(10 * var)
+            fac_mismatch_vars[fac_name].append(var)
+            all_mismatch_vars.append(var)
+            
+    for fac_name, vars_list in fac_mismatch_vars.items():
+        if vars_list:
+            penalties.append(10 * sum(vars_list))
             
     if penalties:
         model.Minimize(sum(penalties))
+
+    # --- Search Strategy ---
+    # Prioritize scheduling Labs and Tutorials (x2) as they are the most restrictive.
+    # We want to try assigning them first (SELECT_MAX_VALUE).
+    all_x2 = list(x2.values())
+    if all_x2:
+        model.AddDecisionStrategy(all_x2, cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
+        
+    # For penalty variables (like mismatches), we MUST use SELECT_MIN_VALUE so the solver
+    # attempts to find 0-penalty solutions first rather than forcing maximum penalties.
+    if all_mismatch_vars:
+        model.AddDecisionStrategy(all_mismatch_vars, cp_model.CHOOSE_FIRST, cp_model.SELECT_MIN_VALUE)
 
     # --- Solve ---
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = time_limit_seconds
     solver.parameters.num_workers = 8  # use multiple cores
     solver.parameters.log_search_progress = True
+    solver.parameters.relative_gap_limit = 0.05  # stop if within 5% of optimal
+    solver.parameters.absolute_gap_limit = 15.0  # stop if within 15 points of optimal
+    solver.parameters.linearization_level = 2    # stronger LP relaxation bounds
 
     status_code = solver.Solve(model)
 
