@@ -15,9 +15,9 @@ jobs:
         uses: actions/checkout@v4
 
       # Optionally call Render's Deploy Hook here to trigger deployment from GitHub
-      # - name: Trigger Render Deployment
-      #   run: |
-      #     curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      - name: Trigger Render Deployment
+        run: |
+           curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
 
       - name: Create GitHub Deployment
         id: deployment
@@ -31,7 +31,7 @@ jobs:
         uses: chrnorm/deployment-status@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          target_url: https://dashboard.render.com/web/srv-xxx  # Optionally link to your Render dashboard or live app
+          target_url: https://timetable-generator-1-u6sa.onrender.com  # Optionally link to your Render dashboard or live app
           environment: production
           state: in_progress
           deployment_id: ${{ steps.deployment.outputs.deployment_id }}
