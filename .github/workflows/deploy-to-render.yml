@@ -6,6 +6,11 @@ on:
       - main  # Change this to your default branch if not 'main'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  deployments: write
+  statuses: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
