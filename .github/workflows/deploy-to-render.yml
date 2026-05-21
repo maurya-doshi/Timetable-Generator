@@ -1,0 +1,48 @@
+name: Deploy to Render & update GitHub Deployment status
+
+on:
+  push:
+    branches:
+      - main  # Change this to your default branch if not 'main'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Optionally call Render's Deploy Hook here to trigger deployment from GitHub
+      # - name: Trigger Render Deployment
+      #   run: |
+      #     curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+      - name: Create GitHub Deployment
+        id: deployment
+        uses: chrnorm/deployment-action@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: production
+          ref: ${{ github.sha }}
+
+      - name: Set GitHub Deployment Status (in_progress)
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target_url: https://dashboard.render.com/web/srv-xxx  # Optionally link to your Render dashboard or live app
+          environment: production
+          state: in_progress
+          deployment_id: ${{ steps.deployment.outputs.deployment_id }}
+
+      # Wait/poll for your actual Render deployment if desired
+      # Or just assume it succeeds after N seconds (not recommended for prod)
+
+      - name: Set GitHub Deployment Status (success)
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: production
+          state: success
+          deployment_id: ${{ steps.deployment.outputs.deployment_id }}
