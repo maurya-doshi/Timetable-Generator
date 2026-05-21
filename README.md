@@ -1,53 +1,86 @@
-# Timetable-Generator
+# 🗓️ Automated Timetable Generator
 
-A project to automatically generate timetables for schools, colleges, or organizations, optimizing constraints like teachers' availability, class timings, and resource allocation.
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://timetable-generator-1-u6sa.onrender.com)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Features
+A robust, AI-powered timetable generator designed for academic institutions. Built with **Streamlit** for the frontend and Google's **OR-Tools (CP-SAT)** for the backend, this application optimizes complex constraints to automatically schedule lectures, tutorials, and practical labs without clashes.
 
-- Automated timetable creation
-- Customizable constraints (teacher availability, classroom assignment, etc.)
-- Conflict detection and resolution
-- User-friendly interface to input requirements
+🚀 **Live Demo:** [https://timetable-generator-1-u6sa.onrender.com](https://timetable-generator-1-u6sa.onrender.com)
 
-## Getting Started
+---
+
+## ✨ Features
+
+- **Mathematical Optimization:** Uses Constraint Programming (CP-SAT) to mathematically prove the best possible schedule.
+- **Dynamic Constraints:** 
+  - Teacher workload caps & availability.
+  - Room allocation & double-booking prevention.
+  - Contiguous multi-slot assignments for labs and tutorials.
+- **Smart Penalty System:** Soft constraints actively minimize "bad" schedule behaviors (like repeating a subject in the first slot every day or spreading out a teacher's schedule too thinly).
+- **Export to PDF:** Generates clean, formatted PDF timetables for sections and faculty using ReportLab.
+- **Cloud Database:** Connects to MongoDB Atlas to persist generated timetables remotely.
+
+## 🛠️ Technology Stack
+
+- **Frontend:** [Streamlit](https://streamlit.io/)
+- **Solver Engine:** [Google OR-Tools](https://developers.google.com/optimization/cp/cp_solver) (Constraint Programming)
+- **Database:** [MongoDB](https://www.mongodb.com/) (PyMongo)
+- **PDF Generation:** [ReportLab](https://pypi.org/project/reportlab/)
+- **Data Handling:** [Pandas](https://pandas.pydata.org/) & [OpenPyXL](https://openpyxl.readthedocs.io/)
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Python 3.x (or relevant language/environment for your implementation)
-- Required libraries (see `requirements.txt` or equivalent)
+- Python 3.10 or higher
+- A MongoDB cluster (local or Atlas)
 
 ### Installation
 
-```bash
-git clone https://github.com/maurya-doshi/Timetable-Generator.git
-cd Timetable-Generator
-# Install dependencies, e.g. for Python:
-pip install -r requirements.txt
-```
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/maurya-doshi/Timetable-Generator.git
+   cd Timetable-Generator
+   ```
+
+2. **Set up a virtual environment (optional but recommended):**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Environment Variables:**
+   Create a `.env` file in the root directory and add your MongoDB connection string (optional, defaults to local):
+   ```env
+   MONGO_URI=mongodb+srv://<username>:<password>@cluster0...
+   DB_NAME=timetable_generator
+   ```
 
 ### Usage
 
-1. Input your class, teacher, and subject data (see sample input file).
-2. Run the timetable generator:
+1. Run the Streamlit application:
+   ```bash
+   streamlit run app.py
+   ```
+2. Open your browser to `http://localhost:8501`.
+3. Upload your section, faculty, and room data (via the Excel templates provided in the app).
+4. Click **Generate Timetable** and let the CP-SAT engine build your schedule!
 
-```bash
-python main.py  # or the appropriate entry script
-```
+## 🤝 Contributing
 
-3. View the generated timetable in the output folder.
-
-## Example
-
-Sample input and output files can be found in the `examples` directory.
-
-## Contributing
-
+Contributions, issues, and feature requests are welcome!
 1. Fork the repository
 2. Create your branch: `git checkout -b feature/your-feature`
-3. Commit your changes: `git commit -am 'Add new feature'`
+3. Commit your changes: `git commit -m 'Add some feature'`
 4. Push to the branch: `git push origin feature/your-feature`
 5. Open a Pull Request
 
-## License
+## 📄 License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
