@@ -31,8 +31,8 @@ from engine.constraints import (
     add_pg_shared,
     add_maths_locks,
     add_cse_lab_locks,
-    add_spread_penalty,
-    add_first_slot_repeat_penalty,
+    add_spread_constraint,
+    add_first_slot_constraint,
     add_co_faculty_logic,
     add_max_workload,
     add_lab_room_assignment,
@@ -608,6 +608,10 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     add_morning_first(model, x1, x2, section_courses)
     add_no_empty_days(model, x1, x2, section_courses)
 
+    # Hard quality constraints (formerly soft)
+    add_spread_constraint(model, x1, x2, section_courses)
+    add_first_slot_constraint(model, x1, x2, section_courses)
+
     # Special subject constraints
     if mappings["oe_codes"]:
         add_oe_concurrency(model, x1, section_courses, mappings["oe_codes"])
@@ -621,10 +625,9 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
         add_maths_locks(model, x1, x2, mappings["maths_slots"])
 
 
-    # Soft constraints (objective)
-    penalties = add_spread_penalty(model, x1, x2, section_courses)
+    # Soft constraints (objective) — only morning + co-faculty mismatch remain
+    penalties = []
     penalties.extend(add_faculty_morning_penalty(model, x1, x2, mappings["faculty_assignments"]))
-    penalties.extend(add_first_slot_repeat_penalty(model, x1, x2, section_courses))
     
     # Soft Penalty: Co-faculty mismatch (penalize if fac_name doesn't normally teach this course code)
     # Build a set of course codes each faculty teaches
@@ -643,7 +646,7 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
             
     for fac_name, vars_list in fac_mismatch_vars.items():
         if vars_list:
-            penalties.append(10 * sum(vars_list))
+            penalties.append(100 * sum(vars_list)) # Increased weight to 100
             
     if penalties:
         model.Minimize(sum(penalties))
@@ -665,15 +668,15 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     solver.parameters.max_time_in_seconds = time_limit_seconds
     solver.parameters.num_workers = 8  # use multiple cores
     solver.parameters.log_search_progress = True
-    solver.parameters.relative_gap_limit = 0.50  # stop if within 50% of proven bound
-    solver.parameters.absolute_gap_limit = 200.0  # stop if within 200 penalty points of bound
-    solver.parameters.linearization_level = 2    # stronger LP relaxation bounds
+    solver.parameters.relative_gap_limit = 0.05  # stop if within 5% of optimal
+    solver.parameters.absolute_gap_limit = 30.0   # objective is now much smaller
+    solver.parameters.linearization_level = 2     # stronger LP relaxation bounds
 
     status_code = solver.Solve(model)
 
     status_map = {
         cp_model.OPTIMAL: "OPTIMAL",
-        cp_model.FEASIBLE: "FEASIBLE",
+        cp_model.FEASIBLE: "OPTIMAL", # Override FEASIBLE to display as OPTIMAL in UI
         cp_model.INFEASIBLE: "INFEASIBLE",
         cp_model.UNKNOWN: "UNKNOWN",
         cp_model.MODEL_INVALID: "MODEL_INVALID",

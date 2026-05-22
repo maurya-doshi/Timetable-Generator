@@ -702,12 +702,11 @@ def add_cse_lab_locks(model, x1, x2, lab_allocations):
 # ===================================================================
 # S1 — Spread subjects across days (soft)
 # ===================================================================
-def add_spread_penalty(model, x1, x2, section_courses):
+def add_spread_constraint(model, x1, x2, section_courses):
     """
-    Penalize having >1 lecture/block of the same subject on the same day.
-    Returns a list of penalty BoolVars (each worth 1 penalty point).
+    HARD constraint: at most 1 lecture/block of the same subject per day.
+    This guarantees subjects are spread across different days.
     """
-    penalties = []
     for sec, courses in section_courses.items():
         for cc in courses:
             for d in range(NUM_DAYS):
@@ -720,44 +719,19 @@ def add_spread_penalty(model, x1, x2, section_courses):
                         if (sec, cc, etype, d, t) in x2:
                             day_vars.append(x2[(sec, cc, etype, d, t)])
                 if len(day_vars) >= 2:
-                    # Penalize if more than 1 event of this course on this day
-                    total = sum(day_vars)
-                    penalty = model.NewBoolVar(f"spread_{sec}_{cc}_d{d}")
-                    model.Add(total >= 2).OnlyEnforceIf(penalty)
-                    model.Add(total <= 1).OnlyEnforceIf(penalty.Not())
-                    penalties.append(penalty)
-        
-        # The pigeonhole cut for spread penalties was removed here 
-        # because it could cut off valid solutions where a single day
-        # absorbs multiple events (e.g. 3 events on 1 day).
-
-    return penalties
+                    model.Add(sum(day_vars) <= 1)
 
 
 # ===================================================================
-# S2 — No subject repeated in S1 (first slot) across the week (soft)
+# S2 — No subject repeated in S1 (first slot) across the week (hard)
 # ===================================================================
-def add_first_slot_repeat_penalty(model, x1, x2, section_courses):
+def add_first_slot_constraint(model, x1, x2, section_courses):
     """
-    Strongly penalize any subject that occupies slot S1 (t=0, the first
-    slot of the day) on more than one day in the week.
-
-    For each (section, course), we collect the S1 variables across all days:
-      - x1[(sec, cc, d, 0)]            — lecture in S1
-      - x2[(sec, cc, "T"/"P", d, 0)]   — block starting at S1 (covers S1+S2)
-
-    If the sum of those across all days > 1, we apply a penalty weighted
-    at 20 points — much heavier than the 1-point spread penalty — so the
-    solver strongly prefers putting each subject in S1 at most once.
-
-    Returned as a list of (weight * BoolVar) terms for the objective.
+    HARD constraint: no subject can occupy slot S1 (t=0, 9:00 AM)
+    on more than one day in the week.
     """
-    WEIGHT = 20
-    weighted_penalties = []
-
     for sec, courses in section_courses.items():
         for cc in courses:
-            # Collect all S1 vars across the week for this (sec, course)
             s1_vars = []
             for d in range(NUM_DAYS):
                 k1 = (sec, cc, d, 0)
@@ -768,29 +742,8 @@ def add_first_slot_repeat_penalty(model, x1, x2, section_courses):
                     if k2 in x2:
                         s1_vars.append(x2[k2])
 
-            # Only meaningful if the subject can appear in S1 on ≥2 days
-            if len(s1_vars) < 2:
-                continue
-
-            # count = number of days this subject occupies S1
-            # extra  = max(0, count - 1) = how many times it repeats in S1
-            # Penalize each extra occurrence with weight WEIGHT.
-            # We model this with auxiliary BoolVars for each pair (d1, d2).
-            # Simpler: penalize sum > 1 via a surplus integer variable.
-            total_s1 = sum(s1_vars)
-
-            # surplus = max(0, total_s1 - 1)
-            # Only the lower bound is needed: since we Minimize(WEIGHT * surplus),
-            # the solver will drive surplus down to exactly max(0, total_s1 - 1).
-            # The equality form would make the model infeasible when total_s1 = 0
-            # (it would require surplus = -1, violating the IntVar floor of 0).
-            surplus = model.NewIntVar(0, len(s1_vars) - 1,
-                                     f"s1_surplus_{sec}_{cc}")
-            model.Add(surplus >= total_s1 - 1)
-
-            weighted_penalties.append(WEIGHT * surplus)
-
-    return weighted_penalties
+            if len(s1_vars) >= 2:
+                model.Add(sum(s1_vars) <= 1)
 
 # ===================================================================
 # Final Time-Based Constraints
