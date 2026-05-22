@@ -1,3 +1,15 @@
+---
+title: Timetable Generator
+emoji: 📅
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: "1.30.0"
+python_version: "3.10"
+app_file: app.py
+pinned: false
+---
+
 # 🗓️ Automated Timetable Generator
 
 [![Streamlit Demo](https://img.shields.io/badge/Demo-Streamlit-brightgreen)](https://timetable-generator-1-u6sa.onrender.com)
