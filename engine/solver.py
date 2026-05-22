@@ -665,8 +665,8 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     solver.parameters.max_time_in_seconds = time_limit_seconds
     solver.parameters.num_workers = 8  # use multiple cores
     solver.parameters.log_search_progress = True
-    solver.parameters.relative_gap_limit = 0.05  # stop if within 5% of optimal
-    solver.parameters.absolute_gap_limit = 15.0  # stop if within 15 points of optimal
+    solver.parameters.relative_gap_limit = 0.50  # stop if within 50% of proven bound
+    solver.parameters.absolute_gap_limit = 200.0  # stop if within 200 penalty points of bound
     solver.parameters.linearization_level = 2    # stronger LP relaxation bounds
 
     status_code = solver.Solve(model)
