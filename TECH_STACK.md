@@ -55,17 +55,16 @@ A **constraint-based timetable generator** that automatically schedules classes,
 
 ```
 Timetable-Generator/
-├── app.py                   # Streamlit entry point & UI
+├── app.py                   # Streamlit entry point & landing page
 ├── pages/
 │   ├── 1_Input_Data.py      # Dual-sheet single-file parser
-│   ├── 2_Constraints.py     # Define hard & soft constraints + DB mocks
-│   ├── 3_Generate.py        # Run solver & view results
-│   └── 4_Export.py           # Download as Excel PDF
+│   ├── 2_Constraints.py     # OE, AEC, PG, maths & lab allocation builder
+│   └── 3_Generate.py        # Run solver, view results & export PDF
 ├── engine/
 │   ├── solver.py            # OR-Tools CP-SAT model builder
-│   └── constraints.py       # Constraint definitions
+│   ├── constraints.py       # Constraint definitions (H1-H10, S1-S2)
+│   └── pdf_export.py        # ReportLab PDF generation
 ├── db.py                    # PyMongo connection & helpers
-├── models.py                # Data schemas (dataclasses)
 ├── config.py                # App settings & DB URI
 ├── requirements.txt         # Python dependencies
 └── TECH_STACK.md

@@ -9,7 +9,6 @@ st.markdown("Configure special scheduling rules and tag specific subjects to tri
 
 # Connect to database
 db = get_db()
-db.client.get_io_loop = db.client.get_io_loop if hasattr(db.client, 'get_io_loop') else None
 
 try:
     db.client.admin.command('ping')
@@ -191,9 +190,11 @@ Add a row for each required lab session.
 # Define available lab rooms and sections
 lab_rooms = ["CSE Lab 1", "CSE Lab 2", "CSE Lab 3", "CSE Lab 4"]
 first_second_sections = ["1A", "1B", "1C", "1K", "2A", "2B", "2C", "2K"]
-days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-slots = [
-    "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)", 
+
+# Lab allocation uses Saturday too (1st/2nd sem labs can fall on Saturday)
+lab_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+lab_slots = [
+    "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)",
     "S4 (12:00 - 12:50)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
 ]
 
@@ -211,8 +212,8 @@ edited_lab_df = st.data_editor(
     column_config={
         "Class": st.column_config.SelectboxColumn("Class Section", options=first_second_sections, required=True),
         "Lab Room": st.column_config.SelectboxColumn("Lab Room", options=lab_rooms, required=True),
-        "Day": st.column_config.SelectboxColumn("Day", options=days, required=True),
-        "Slot": st.column_config.SelectboxColumn("Slot", options=slots, required=True),
+        "Day": st.column_config.SelectboxColumn("Day", options=lab_days, required=True),
+        "Slot": st.column_config.SelectboxColumn("Slot", options=lab_slots, required=True),
     },
     use_container_width=True,
     key="lab_alloc_editor"

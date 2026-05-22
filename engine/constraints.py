@@ -14,6 +14,7 @@ Terminology used throughout:
     x2        — dict of BoolVars for 2-slot blocks (tutorials / practicals)
 """
 
+from collections import defaultdict
 from ortools.sat.python import cp_model
 
 # ---------------------------------------------------------------------------
@@ -38,7 +39,6 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
 
     faculty_assignments: dict  faculty_name -> list of (section, course_code)
     """
-    from collections import defaultdict
     # Build a lookup for co_fac variables by (fac_name, day, slot_it_covers)
     # Since each co_fac block is 2 slots, it covers t and t+1.
     cofac_lookup = defaultdict(list)
@@ -102,9 +102,11 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
 def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
     """
     For every practical (P) block, exactly 2 Co-Faculty members must be assigned.
-    The primary faculty assigned to this lab CANNOT be chosen as a co-faculty.
+
+    Note: Primary faculty are already excluded at variable-creation time
+    (_create_variables only creates co_fac vars for non-primary faculty),
+    so no explicit exclusion constraint is needed here.
     """
-    from collections import defaultdict
     block_to_cofacs = defaultdict(list)
     for (fac_name, sec, cc, d, t), var in co_fac.items():
         block_to_cofacs[(sec, cc, d, t)].append((fac_name, var))
@@ -113,19 +115,11 @@ def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
         k_prac = (sec, cc, "P", d, t)
         if k_prac in x2:
             prac_var = x2[k_prac]
-            
-            # 1. Exactly 2 co-faculty if the block is scheduled, 0 otherwise.
+
+            # Exactly 2 co-faculty if the block is scheduled, 0 otherwise.
             all_vars = [var for _, var in cofac_list]
             model.Add(sum(all_vars) == 2 * prac_var)
-            
-            # 2. Primary faculty cannot be co-faculty
-            # Find the primary faculty for this (sec, cc)
-            for fac_name, assignments in faculty_assignments.items():
-                if (sec, cc) in assignments:
-                    # This faculty is the primary teacher! Force their co-fac var to 0.
-                    for cf_name, var in cofac_list:
-                        if cf_name == fac_name:
-                            model.Add(var == 0)
+
 
 def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designations,
                      semester="odd", count_cofac_in_workload=True):
@@ -141,7 +135,6 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
                 crowd out primary teaching assignments.
         Revert: set EXCLUDE_COFAC_FROM_WORKLOAD_CAP = False in solver.py.
     """
-    from collections import defaultdict
     if semester.lower() == "odd":
         limits = {"Professor": 18, "Associate": 24, "Assistant": 28}
     else:
@@ -153,10 +146,15 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
         for (fac_name, sec, cc, d, t), var in co_fac.items():
             cofac_by_fac[fac_name].append(var)
 
+    # Accumulators for the global workload cut (built in the same pass as per-faculty caps)
+    all_faculty_events = []
+    total_capacity_units = 0
+
     for fac, assignments in faculty_assignments.items():
         desig = faculty_designations.get(fac, "Assistant")
         max_units = limits.get(desig, 28)
-        
+        total_capacity_units += max_units // 2
+
         events = []
         # Primary lectures (1 slot = 2 units)
         for sec, cc in assignments:
@@ -165,42 +163,25 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
                     k1 = (sec, cc, d, t)
                     if k1 in x1:
                         events.append(x1[k1])
-                        
+
                     # Primary blocks (2 slots = 2 units)
                     for etype in ("T", "P"):
                         k2 = (sec, cc, etype, d, t)
                         if k2 in x2:
                             events.append(x2[k2])
-                            
+
         # Co-faculty blocks — only count toward cap if flag is True
         events.extend(cofac_by_fac[fac])
-                
-        # Total units = sum(events) * 2
-        # sum(events) * 2 <= max_units  =>  sum(events) <= max_units // 2
+
+        # Per-faculty cap: sum(events) * 2 <= max_units  =>  sum(events) <= max_units // 2
         model.Add(sum(events) <= max_units // 2)
+
+        # Accumulate for the global cut (same events, no second loop needed)
+        all_faculty_events.extend(events)
 
     # --- GLOBAL WORKLOAD CUT ---
     # Sum of all teaching events across all faculty must be <= sum of all capacities.
     # This redundant constraint helps the solver's lower-bound proving logic.
-    all_faculty_events = []
-    total_capacity_units = 0
-    for fac, assignments in faculty_assignments.items():
-        desig = faculty_designations.get(fac, "Assistant")
-        total_capacity_units += limits.get(desig, 28) // 2
-        
-        # Primary events
-        for sec, cc in assignments:
-            for d in range(5):
-                for t in range(7):
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1: all_faculty_events.append(x1[k1])
-                    for etype in ("T", "P"):
-                        k2 = (sec, cc, etype, d, t)
-                        if k2 in x2: all_faculty_events.append(x2[k2])
-        # Co-faculty events
-        if count_cofac_in_workload:
-            all_faculty_events.extend(cofac_by_fac[fac])
-
     if all_faculty_events:
         model.Add(sum(all_faculty_events) <= total_capacity_units)
 
@@ -470,8 +451,6 @@ def add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments):
 
     To revert: set ENABLE_CO_FACULTY_BREAK = False in solver.py.
     """
-    from collections import defaultdict
-
     # Build fast lookup: (fac, d) -> list of (t_start, var)
     fac_cofac_by_day = defaultdict(list)
     for (fac_name, sec, cc, d, t_start), var in co_fac.items():
@@ -890,7 +869,6 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
     # Two events conflict if their occupied slots overlap on the same day+room.
     
     # NEW: Build a lookup for events covering each (day, slot)
-    from collections import defaultdict
     slot_to_events = defaultdict(list)
     for i, (sec, cc, etype, d2, t2, duration, active_var) in enumerate(needs_room):
         # Store index i and the room-assignment variable for this event

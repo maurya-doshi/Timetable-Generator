@@ -172,7 +172,7 @@ def parse_courses_sheet(ws):
             val = get_val(key, "")
             try:
                 return int(float(val)) if val else default
-            except:
+            except (ValueError, TypeError):
                 return default
         
         course_code = get_val("Course Code")
@@ -206,6 +206,11 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
+    # 1. File size check (5MB limit)
+    if uploaded_file.size > 5 * 1024 * 1024:
+        st.error("❌ File is too large! Maximum allowed size is 5MB.")
+        st.stop()
+
     try:
         wb = load_workbook(BytesIO(uploaded_file.read()), data_only=True)
     except Exception as e:
@@ -223,6 +228,14 @@ if uploaded_file is not None:
         with st.expander("Debug info"):
             st.json(debug)
         st.stop()
+
+    # 2. Check for duplicate faculty names
+    fac_names = [r["name"] for r in faculty_records]
+    dup_fac = [name for name in set(fac_names) if fac_names.count(name) > 1]
+    if dup_fac:
+        st.error(f"❌ Duplicate faculty names found: **{', '.join(dup_fac)}**. Please resolve these before continuing.")
+        st.stop()
+
     st.success(f"✅ Parsed **{len(faculty_records)} faculty record(s)** from Faculty_Assignments.")
 
     # --- Parse Courses sheet ---
@@ -234,6 +247,14 @@ if uploaded_file is not None:
     if courses_error:
         st.error(f"Courses error: {courses_error}")
         st.stop()
+
+    # 3. Check for duplicate course codes
+    course_codes = [r["course_code"] for r in courses_records]
+    dup_cc = [code for code in set(course_codes) if course_codes.count(code) > 1]
+    if dup_cc:
+        st.error(f"❌ Duplicate course codes found: **{', '.join(dup_cc)}**. Please resolve these before continuing.")
+        st.stop()
+
     st.success(f"✅ Parsed **{len(courses_records)} course(s)** from Courses.")
 
     # -----------------------------------------------------------------------

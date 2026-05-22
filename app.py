@@ -12,8 +12,7 @@ st.markdown(
     Welcome to the **Timetable Generator**! Use the sidebar to navigate:
 
     1. **Input Data** — Upload faculty & subject allocations via Excel
-    2. **Constraints** — Define scheduling rules *(coming soon)*
-    3. **Generate** — Run the solver *(coming soon)*
-    4. **Export** — Download your timetable *(coming soon)*
+    2. **Constraints** — Configure OE, AEC, PG shared classes, maths locks & lab allocations
+    3. **Generate** — Run the CP-SAT solver and export timetables as PDF
     """
 )

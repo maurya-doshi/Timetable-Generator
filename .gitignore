@@ -11,6 +11,7 @@ build/
 venv/
 env/
 .venv/
+.venv2/
 
 # Environment variables
 .env
@@ -25,3 +26,16 @@ env/
 Thumbs.db
 .DS_Store
 
+# Scratch / debug files
+scratch_*.py
+check_*.py
+temp_*.txt
+
+# Generated outputs
+*.pdf
+
+# Streamlit cache
+.streamlit/
+
+# AI context
+.gemini/

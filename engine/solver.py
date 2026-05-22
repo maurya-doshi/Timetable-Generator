@@ -13,6 +13,7 @@ Flow:
     6. Extract & return timetable grids
 """
 
+from collections import defaultdict
 from ortools.sat.python import cp_model
 from db import get_db
 from engine.constraints import (
@@ -72,37 +73,35 @@ _SEMESTER_SECTIONS = {
 
 
 def _sections_for_semester(sem_str: str) -> list[str]:
-    """Map a semester string (from course/faculty data) to section list."""
+    """Map a semester string (from course/faculty data) to a section list.
+
+    Two code paths:
+      1. Whole-semester number (e.g. "3") → all sections for that semester.
+      2. Comma/slash-separated specific sections (e.g. "3A", "3A, 3B", "3A/3B").
+    Returns [] if the input cannot be matched.
+    """
     s = str(sem_str).strip()
-    
+
     # 1. Exact match for a whole semester (e.g. "3" -> ["3A", "3B", "3C", "3D"])
     if s in _SEMESTER_SECTIONS:
         return _SEMESTER_SECTIONS[s]
-        
-    for key in _SEMESTER_SECTIONS:
-        if s.lower() == key.lower():
-            return _SEMESTER_SECTIONS[key]
-            
-    # 2. Check if it's a comma-separated list of specific sections (e.g. "3A", "3A, 3B")
+
+    # 2. Check if it's a comma/slash-separated list of specific sections
     all_sections = set()
     for secs in _SEMESTER_SECTIONS.values():
         all_sections.update(secs)
-        
+
     parsed_sections = []
-    # Replace slashes with commas to support "3A/3B" formats too
     parts = [p.strip() for p in s.replace('/', ',').split(',')]
     for part in parts:
         part_upper = part.upper()
         # Find matching section ignoring case
         match = next((sec for sec in all_sections if sec.upper() == part_upper), None)
-        if match:
-            if match not in parsed_sections:
-                parsed_sections.append(match)
-            
-    if parsed_sections:
-        return parsed_sections
-        
-    return []
+        if match and match not in parsed_sections:
+            parsed_sections.append(match)
+
+    return parsed_sections
+
 
 
 # -----------------------------------------------------------------------
@@ -380,11 +379,26 @@ def _build_mappings(course_info, faculty_raw, constraints_doc):
 # -----------------------------------------------------------------------
 # Model building
 # -----------------------------------------------------------------------
-def _create_variables(model, section_courses, course_info, faculty_designations):
-    """Create x1 (lecture), x2 (tutorial/practical block), and co_fac (co-faculty) BoolVars."""
+def _create_variables(model, section_courses, course_info, faculty_designations,
+                      faculty_assignments):
+    """Create x1 (lecture), x2 (tutorial/practical block), and co_fac (co-faculty) BoolVars.
+
+    Co-faculty variables are only created for faculty who are NOT the primary
+    instructor of the given (section, course), since primary instructors are
+    always forced to 0 by add_co_faculty_logic anyway.  This eliminates a
+    large number of variables and the constraints that would zero them out.
+    """
     x1 = {}
     x2 = {}
     co_fac = {} # (fac_name, sec, cc, d, t) -> BoolVar
+
+    # Pre-compute the set of primary faculty for each (section, course)
+    primary_faculty_for = {}  # (sec, cc) -> set of faculty names
+    for fac_name, assignments in faculty_assignments.items():
+        for sec, cc in assignments:
+            primary_faculty_for.setdefault((sec, cc), set()).add(fac_name)
+
+    all_faculty = list(faculty_designations.keys())
 
     for sec, courses in section_courses.items():
         for cc in courses:
@@ -411,13 +425,17 @@ def _create_variables(model, section_courses, course_info, faculty_designations)
 
             # Practical block vars (only if P > 0)
             if P > 0:
+                # Eligible co-faculty: everyone except the primary instructor(s)
+                primary_fac = primary_faculty_for.get((sec, cc), set())
+                eligible_cofac = [f for f in all_faculty if f not in primary_fac]
+
                 for d in range(NUM_DAYS):
                     for t in VALID_BLOCK_STARTS:
                         x2[(sec, cc, "P", d, t)] = model.NewBoolVar(
                             f"prac_{sec}_{cc}_d{d}_t{t}"
                         )
-                        # Create dynamic co-faculty assignment variables for every faculty member for this specific practical block
-                        for fac_name in faculty_designations.keys():
+                        # Only create co-faculty vars for eligible (non-primary) faculty
+                        for fac_name in eligible_cofac:
                             k_cf = (fac_name, sec, cc, d, t)
                             co_fac[k_cf] = model.NewBoolVar(f"cofac_{fac_name}_{sec}_{cc}_{d}_{t}")
 
@@ -565,7 +583,9 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
 
     # --- Build model ---
     model = cp_model.CpModel()
-    x1, x2, co_fac = _create_variables(model, section_courses, course_info, mappings["faculty_designations"])
+    x1, x2, co_fac = _create_variables(model, section_courses, course_info,
+                                        mappings["faculty_designations"],
+                                        mappings["faculty_assignments"])
 
     # Hard constraints
     add_no_faculty_clash(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["pg_core_code"], mappings["pg_sections"])
@@ -613,7 +633,6 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
         fac_taught_courses[fac] = {cc for (_, cc) in assigns}
         
     # Aggregate mismatch penalties by faculty to simplify the objective landscape
-    from collections import defaultdict
     fac_mismatch_vars = defaultdict(list)
     all_mismatch_vars = []
     for (fac_name, sec, cc, d, t), var in co_fac.items():
