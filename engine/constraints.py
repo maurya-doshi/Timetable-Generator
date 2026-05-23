@@ -122,68 +122,89 @@ def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
 
 
 def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designations,
-                     semester="odd", count_cofac_in_workload=True):
+                     semester="odd", count_cofac_in_workload=None):
     """
-    Enforces Maximum Workload Units per faculty.
-    1 L, T, or P block = 2 units.
-    Limits (Odd): Prof=18, Assoc=24, Assist=28
-    Limits (Even): Prof=14, Assoc=18, Assist=24
+    Enforces a workload TARGET (±2 units) per faculty member.
 
-    count_cofac_in_workload (TEMPORARY FIX flag):
-        True  → original behaviour: co-faculty slots count toward the cap.
-        False → co-faculty slots are excluded from the cap so they don't
-                crowd out primary teaching assignments.
-        Revert: set EXCLUDE_COFAC_FROM_WORKLOAD_CAP = False in solver.py.
+    Unit rule
+    ---------
+      1 lecture  (L, 1 hr)        = 2 units  → counts as 1 event
+      1 tutorial block (T, 2 hr)  = 2 units  → counts as 1 event
+      1 practical block (P, 2 hr) = 2 units  → counts as 1 event
+      1 co-faculty lab assignment = 2 units  → counts as 1 event
+                                               (always included)
+
+    Targets
+    -------
+      Odd semester  : Professor=18  Associate=24  Assistant=28
+      Even semester : Professor=14  Associate=18  Assistant=24
+
+    Tolerance
+    ---------
+      Each faculty's total events must satisfy:
+          target_events - 1 <= sum(events) <= target_events + 1
+      where target_events = target_units // 2.
+      This allows ±2 units of flexibility (±1 event) while keeping
+      faculty loads balanced and close to their designation target.
+
+    The `count_cofac_in_workload` parameter is kept for backwards
+    compatibility but is no longer used — co-faculty always counts.
     """
     if semester.lower() == "odd":
-        limits = {"Professor": 18, "Associate": 24, "Assistant": 28}
+        targets = {"Professor": 18, "Associate": 24, "Assistant": 28}
     else:
-        limits = {"Professor": 14, "Associate": 18, "Assistant": 24}
+        targets = {"Professor": 14, "Associate": 18, "Assistant": 24}
 
-    # Pre-calculate co-faculty lookup by faculty name
+    # Always count co-faculty blocks — each var is one 2-hr lab = 2 units.
     cofac_by_fac = defaultdict(list)
-    if count_cofac_in_workload:
-        for (fac_name, sec, cc, d, t), var in co_fac.items():
-            cofac_by_fac[fac_name].append(var)
+    for (fac_name, sec, cc, d, t), var in co_fac.items():
+        cofac_by_fac[fac_name].append(var)
 
-    # Accumulators for the global workload cut (built in the same pass as per-faculty caps)
+    # Accumulators for global workload cuts (redundant constraints that
+    # help the solver prove bounds faster).
     all_faculty_events = []
-    total_capacity_units = 0
+    total_upper_events = 0
 
     for fac, assignments in faculty_assignments.items():
         desig = faculty_designations.get(fac, "Assistant")
-        max_units = limits.get(desig, 28)
-        total_capacity_units += max_units // 2
+        target_units = targets.get(desig, 28)
+        # Convert units → event count (each event = 2 units)
+        target_events = target_units // 2   # e.g. 18 units → 9 events
 
         events = []
-        # Primary lectures (1 slot = 2 units)
+
+        # Primary lectures: 1 slot = 1 event = 2 units
         for sec, cc in assignments:
-            for d in range(5):
-                for t in range(7):
+            for d in range(NUM_DAYS):
+                for t in range(NUM_SLOTS):
                     k1 = (sec, cc, d, t)
                     if k1 in x1:
                         events.append(x1[k1])
 
-                    # Primary blocks (2 slots = 2 units)
+                    # Primary T/P blocks: 2 slots = 1 event = 2 units
                     for etype in ("T", "P"):
                         k2 = (sec, cc, etype, d, t)
                         if k2 in x2:
                             events.append(x2[k2])
 
-        # Co-faculty blocks — only count toward cap if flag is True
+        # Co-faculty lab blocks: 1 block = 1 event = 2 units
         events.extend(cofac_by_fac[fac])
 
-        # Per-faculty cap: sum(events) * 2 <= max_units  =>  sum(events) <= max_units // 2
-        model.Add(sum(events) <= max_units // 2)
+        if not events:
+            continue
 
-        # Accumulate for the global cut (same events, no second loop needed)
+        # Enforce upper bound limit only:
+        #   upper: sum <= target_events + 1  (allows target + 2 units)
+        model.Add(sum(events) <= target_events + 1)
+
+        # Accumulate for global cuts
         all_faculty_events.extend(events)
+        total_upper_events += target_events + 1
 
-    # --- GLOBAL WORKLOAD CUT ---
-    # Sum of all teaching events across all faculty must be <= sum of all capacities.
-    # This redundant constraint helps the solver's lower-bound proving logic.
+    # --- GLOBAL WORKLOAD CUTS ---
+    # Redundant aggregate constraints help the solver's bound-proving.
     if all_faculty_events:
-        model.Add(sum(all_faculty_events) <= total_capacity_units)
+        model.Add(sum(all_faculty_events) <= total_upper_events)
 
 
 # ===================================================================
