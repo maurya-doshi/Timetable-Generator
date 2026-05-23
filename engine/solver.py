@@ -37,7 +37,6 @@ from engine.constraints import (
     add_max_workload,
     add_lab_room_assignment,
     add_friday_half_day,
-    add_faculty_morning_penalty,
     add_morning_first,
     add_no_empty_days,
 )
@@ -625,9 +624,8 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
         add_maths_locks(model, x1, x2, mappings["maths_slots"])
 
 
-    # Soft constraints (objective) — only morning + co-faculty mismatch remain
+    # Soft constraints (objective) — only co-faculty mismatch
     penalties = []
-    penalties.extend(add_faculty_morning_penalty(model, x1, x2, mappings["faculty_assignments"]))
     
     # Soft Penalty: Co-faculty mismatch (penalize if fac_name doesn't normally teach this course code)
     # Build a set of course codes each faculty teaches
