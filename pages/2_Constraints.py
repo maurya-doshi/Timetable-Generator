@@ -121,7 +121,7 @@ with pg_tab:
 
 st.divider()
 
-st.header("3. Manual Slot Overrides (Maths)")
+st.header("2. Manual Slot Overrides (Maths)")
 st.markdown("""
 Since Maths faculty belong to a different department, their workload is not tracked here. 
 Use the grid below to **lock exactly when and where Maths happens**. 
@@ -180,7 +180,7 @@ st.divider()
 # =====================================================================
 # NEW: CSE Lab Allocation for 1st & 2nd Semester
 # =====================================================================
-st.header("4. CSE Lab Allocation (1st & 2nd Semester)")
+st.header("3. CSE Lab Allocation (1st & 2nd Semester)")
 st.markdown("""
 Assign **CSE Labs 1–4** to specific class sections (1A,1B,1C,2A,2B,2C) on fixed days and time slots.
 The lab subject itself is irrelevant – this reserves the **room** for that section at that time.

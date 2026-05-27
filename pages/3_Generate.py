@@ -99,9 +99,13 @@ stats = result["stats"]
 # Status badge
 st.header("📊 Results")
 if status == "OPTIMAL":
-    st.success(f"✅ **OPTIMAL** — Absolute best timetable found in {stats.get('solve_time_s', '?')}s")
+    st.success(f"✅ **OPTIMAL** — Mathematically proven best timetable found in {stats.get('solve_time_s', '?')}s")
 elif status == "FEASIBLE":
-    st.success(f"✅ **SUCCESS (Feasible)** — Best timetable found within time limit ({stats.get('solve_time_s', '?')}s). \n\n*Note: In complex scheduling, proving absolute mathematical optimality can take hours. This timetable satisfies all your hard rules and is highly optimized!*")
+    st.warning(
+        f"⚠️ **FEASIBLE** — A valid timetable was found within the time limit ({stats.get('solve_time_s', '?')}s), "
+        f"but the solver did not prove it is the absolute best. "
+        f"Try increasing the time limit for a higher-quality result."
+    )
 elif status == "INFEASIBLE":
     st.error("❌ **INFEASIBLE** — no valid timetable exists with current data & constraints.")
 else:

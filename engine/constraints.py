@@ -124,56 +124,47 @@ def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
 def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designations,
                      semester="odd", count_cofac_in_workload=None):
     """
-    Enforces a workload TARGET (±2 units) per faculty member.
+    Enforces a per-faculty workload cap based on designation.
 
     Unit rule
     ---------
-      1 lecture  (L, 1 hr)        = 2 units  → counts as 1 event
-      1 tutorial block (T, 2 hr)  = 2 units  → counts as 1 event
-      1 practical block (P, 2 hr) = 2 units  → counts as 1 event
-      1 co-faculty lab assignment = 2 units  → counts as 1 event
-                                               (always included)
+      1 lecture slot       (L) = 1 event
+      1 tutorial block     (T) = 1 event  (2 slots counted as one block)
+      1 practical block    (P) = 1 event  (2 slots counted as one block)
+      1 co-faculty lab block   = 1 event  (always included)
 
-    Targets
-    -------
-      Odd semester  : Professor=18  Associate=24  Assistant=28
-      Even semester : Professor=14  Associate=18  Assistant=24
-
-    Tolerance
+    Max events = max_units // 2
     ---------
-      Each faculty's total events must satisfy:
-          target_events - 1 <= sum(events) <= target_events + 1
-      where target_events = target_units // 2.
-      This allows ±2 units of flexibility (±1 event) while keeping
-      faculty loads balanced and close to their designation target.
+      Odd  semester : Professor=18, Associate=24, Assistant=28  (units)
+      Even semester : Professor=14, Associate=18, Assistant=24  (units)
 
-    The `count_cofac_in_workload` parameter is kept for backwards
-    compatibility but is no longer used — co-faculty always counts.
+    Only an upper cap is enforced. A lower bound is intentionally omitted
+    because faculty may legitimately teach fewer classes than the target
+    (e.g. they only appear in the DB for one course).
+
+    The `count_cofac_in_workload` parameter is kept for API compatibility
+    but is no longer used — co-faculty blocks always count toward the cap.
     """
     if semester.lower() == "odd":
-        targets = {"Professor": 18, "Associate": 24, "Assistant": 28}
+        caps = {"Professor": 18, "Associate": 24, "Assistant": 28}
     else:
-        targets = {"Professor": 14, "Associate": 18, "Assistant": 24}
+        caps = {"Professor": 14, "Associate": 18, "Assistant": 24}
 
-    # Always count co-faculty blocks — each var is one 2-hr lab = 2 units.
     cofac_by_fac = defaultdict(list)
     for (fac_name, sec, cc, d, t), var in co_fac.items():
         cofac_by_fac[fac_name].append(var)
 
-    # Accumulators for global workload cuts (redundant constraints that
-    # help the solver prove bounds faster).
     all_faculty_events = []
     total_upper_events = 0
 
     for fac, assignments in faculty_assignments.items():
         desig = faculty_designations.get(fac, "Assistant")
-        target_units = targets.get(desig, 28)
-        # Convert units → event count (each event = 2 units)
-        target_events = target_units // 2   # e.g. 18 units → 9 events
+        max_units = caps.get(desig, 28)
+        max_events = max_units // 2   # e.g. 28 units → 14 events
 
         events = []
 
-        # Primary lectures: 1 slot = 1 event = 2 units
+        # Primary lectures (iterate all slots — x1 is keyed by any slot)
         for sec, cc in assignments:
             for d in range(NUM_DAYS):
                 for t in range(NUM_SLOTS):
@@ -181,28 +172,26 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
                     if k1 in x1:
                         events.append(x1[k1])
 
-                    # Primary T/P blocks: 2 slots = 1 event = 2 units
+                # Blocks — MUST use VALID_BLOCK_STARTS only
+                for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
                         k2 = (sec, cc, etype, d, t)
                         if k2 in x2:
                             events.append(x2[k2])
 
-        # Co-faculty lab blocks: 1 block = 1 event = 2 units
+        # Co-faculty lab blocks always count
         events.extend(cofac_by_fac[fac])
 
         if not events:
             continue
 
-        # Enforce upper bound limit only:
-        #   upper: sum <= target_events + 1  (allows target + 2 units)
-        model.Add(sum(events) <= target_events + 1)
+        # Upper cap: faculty cannot exceed their designation limit
+        model.Add(sum(events) <= max_events)
 
-        # Accumulate for global cuts
         all_faculty_events.extend(events)
-        total_upper_events += target_events + 1
+        total_upper_events += max_events
 
-    # --- GLOBAL WORKLOAD CUTS ---
-    # Redundant aggregate constraints help the solver's bound-proving.
+    # Global redundant cut: helps solver prove bounds faster
     if all_faculty_events:
         model.Add(sum(all_faculty_events) <= total_upper_events)
 
@@ -296,38 +285,48 @@ def add_no_student_gaps(model, x1, x2, section_courses):
     This forces all classes to be packed at the start of the day (S1 onwards),
     preventing any gaps in the student's schedule, while allowing them to finish early
     if they run out of weekly hours.
+
+    The lunch break boundary (S4 → S5, i.e. t=3 → t=4) is intentionally exempt:
+    a section may have morning classes only and no afternoon classes, which is valid.
+    We still enforce contiguity within the morning block (S1–S4) and within the
+    afternoon block (S5–S7) separately.
     """
+    # S4 is index 3, S5 is index 4. The lunch gap is between indices 3 and 4.
+    LUNCH_BOUNDARY = 3  # implication active[4] => active[3] is skipped
+
     for sec, courses in section_courses.items():
         for d in range(NUM_DAYS):
-            # Create a boolean variable for each slot indicating if it's active
+            # Build an is_active BoolVar for every slot
             active = []
             for t in range(NUM_SLOTS):
                 terms = []
                 for cc in courses:
-                    # 1-slot lecture
                     k1 = (sec, cc, d, t)
-                    if k1 in x1: terms.append(x1[k1])
-                    
-                    # 2-slot blocks (covers t if it starts at t OR t-1)
+                    if k1 in x1:
+                        terms.append(x1[k1])
+
+                    # 2-slot blocks: covers t if block starts at t OR at t-1
                     for etype in ("T", "P"):
                         k_start = (sec, cc, etype, d, t)
-                        if k_start in x2: terms.append(x2[k_start])
+                        if k_start in x2:
+                            terms.append(x2[k_start])
                         if t > 0:
                             k_prev = (sec, cc, etype, d, t - 1)
-                            if k_prev in x2: terms.append(x2[k_prev])
-                            
-                # is_active = 1 if any term is 1, else 0
+                            if k_prev in x2:
+                                terms.append(x2[k_prev])
+
                 is_active = model.NewBoolVar(f"active_{sec}_d{d}_t{t}")
                 if terms:
                     model.AddMaxEquality(is_active, terms)
                 else:
                     model.Add(is_active == 0)
                 active.append(is_active)
-                
-            # Constraint: if slot t is empty, slot t+1 MUST be empty.
-            # Equivalently: if slot t+1 is active, slot t MUST be active.
+
+            # Enforce contiguity, but SKIP the lunch boundary (S4→S5)
             for t in range(NUM_SLOTS - 1):
-                model.AddImplication(active[t+1], active[t])
+                if t == LUNCH_BOUNDARY:
+                    continue  # S5 may be empty even if S4 is occupied
+                model.AddImplication(active[t + 1], active[t])
 
 
 # ===================================================================
@@ -402,59 +401,75 @@ def add_no_empty_days(model, x1, x2, section_courses):
 
 
 # ===================================================================
-# H5 — Faculty gap after teaching
-# ===================================================================
 def add_faculty_break(model, x1, x2, faculty_assignments, co_fac=None):
     """
     After any primary teaching event, faculty must have ≥1 free slot before
-    their next primary event.
+    their next primary event on the same day.
 
     Rules enforced:
       1. Primary lecture at t → no primary event starts at t+1.
-      2. Primary block ending at t (started t-1) → no primary event starts at t+1.
+      2. Primary 2-slot block ending at t (i.e. started at t-1) → no primary
+         event starts at t+1.
 
-    Note: the co-fac ↔ primary break is handled separately by add_co_faculty_break.
+    x2 keys only exist for VALID_BLOCK_STARTS = [0, 2, 4, 5]. The inner loops
+    now iterate only over those starts to avoid silent no-ops when t is not a
+    valid block start.
+
+    Note: co-fac ↔ primary break is handled separately by add_co_faculty_break.
     """
     for fac, assignments in faculty_assignments.items():
         for d in range(NUM_DAYS):
             for t in range(NUM_SLOTS):
-                # Collect lecture vars at slot t for this faculty
+                # --- lectures that occupy exactly slot t ---
                 lec_terms = []
                 for sec, cc in assignments:
-                    key1 = (sec, cc, d, t)
-                    if key1 in x1:
-                        lec_terms.append(x1[key1])
+                    k1 = (sec, cc, d, t)
+                    if k1 in x1:
+                        lec_terms.append(x1[k1])
 
-                # Collect primary block vars that END at slot t (started at t-1)
+                # --- blocks that END at slot t (started at t-1) ---
+                # A block at start s covers slots s and s+1, so it ends at s+1.
+                # We need s = t-1 and s must be in VALID_BLOCK_STARTS.
                 block_end_terms = []
-                if t > 0:
+                if t > 0 and (t - 1) in VALID_BLOCK_STARTS:
                     for sec, cc in assignments:
                         for etype in ("T", "P"):
                             key_prev = (sec, cc, etype, d, t - 1)
                             if key_prev in x2:
                                 block_end_terms.append(x2[key_prev])
 
-                # All primary terms that could START at slot t+1
-                if t + 1 < NUM_SLOTS:
-                    next_start_terms = []
-                    for sec, cc in assignments:
-                        key_next = (sec, cc, d, t + 1)
-                        if key_next in x1:
-                            next_start_terms.append(x1[key_next])
+                if not lec_terms and not block_end_terms:
+                    continue
+
+                # --- everything that could START at slot t+1 ---
+                if t + 1 >= NUM_SLOTS:
+                    continue
+
+                next_start_terms = []
+                for sec, cc in assignments:
+                    k_next = (sec, cc, d, t + 1)
+                    if k_next in x1:
+                        next_start_terms.append(x1[k_next])
+                    # Only check t+1 as a block start if it is valid
+                    if (t + 1) in VALID_BLOCK_STARTS:
                         for etype in ("T", "P"):
-                            key_next_block = (sec, cc, etype, d, t + 1)
-                            if key_next_block in x2:
-                                next_start_terms.append(x2[key_next_block])
+                            k_nb = (sec, cc, etype, d, t + 1)
+                            if k_nb in x2:
+                                next_start_terms.append(x2[k_nb])
 
-                    # Rule 1: After a primary lecture at t → nothing primary starts at t+1
-                    for lv in lec_terms:
-                        for nv in next_start_terms:
-                            model.Add(lv + nv <= 1)
+                if not next_start_terms:
+                    continue
 
-                    # Rule 2: After a primary block ending at t → nothing primary starts at t+1
-                    for bv in block_end_terms:
-                        for nv in next_start_terms:
-                            model.Add(bv + nv <= 1)
+                # Rule 1: lecture at t → nothing starts at t+1
+                for lv in lec_terms:
+                    for nv in next_start_terms:
+                        model.Add(lv + nv <= 1)
+
+                # Rule 2: block ending at t → nothing starts at t+1
+                for bv in block_end_terms:
+                    for nv in next_start_terms:
+                        model.Add(bv + nv <= 1)
+
 
 
 # ===================================================================
@@ -947,38 +962,4 @@ def add_friday_half_day(model, x1, x2, section_courses):
                         if k2 in x2:
                             model.Add(x2[k2] == 0)
 
-def add_faculty_morning_penalty(model, x1, x2, faculty_assignments):
-    """
-    Penalize if a faculty has NO morning sessions (S1-S4) across the entire week.
-    Returns a list of penalties to append to the master penalty list.
-    """
-    penalties = []
-    for fac, assignments in faculty_assignments.items():
-        morning_vars = []
-        for sec, cc in assignments:
-            for d in range(NUM_DAYS):
-                for t in MORNING_SLOTS:
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1:
-                        morning_vars.append(x1[k1])
-                # Blocks starting in the morning
-                # 0, 2 are strictly morning blocks (covering S1-S2, S3-S4)
-                for t in [0, 2]:
-                    for etype in ("T", "P"):
-                        k2 = (sec, cc, etype, d, t)
-                        if k2 in x2:
-                            morning_vars.append(x2[k2])
-                            
-        if morning_vars:
-            # has_morning_fac is 1 if they have ANY morning sessions, 0 if NONE.
-            has_morning_fac = model.NewBoolVar(f"has_morning_{fac}")
-            model.AddMaxEquality(has_morning_fac, morning_vars)
-            
-            # Penalize the LACK of morning sessions.
-            # Using positive penalties helps the solver's lower-bound proving logic.
-            no_morning = model.NewBoolVar(f"no_morning_{fac}")
-            model.Add(no_morning == 1 - has_morning_fac)
-            
-            penalties.append(30 * no_morning)
-            
-    return penalties
+# add_faculty_morning_penalty removed — no longer used or imported.

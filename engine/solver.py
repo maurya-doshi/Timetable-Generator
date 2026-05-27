@@ -42,14 +42,10 @@ from engine.constraints import (
 )
 
 # ---------------------------------------------------------------------------
-# TEMPORARY FIX FLAGS — set to False to revert individual fixes
+# FIX FLAGS
 # ---------------------------------------------------------------------------
-# Fix A: Exclude co-faculty slots from the primary workload cap.
-#        Prevents co-faculty duty from crowding out a faculty's own lectures.
-EXCLUDE_COFAC_FROM_WORKLOAD_CAP: bool = True
-
-# Fix B: Enforce a 1-slot break between primary teaching and co-faculty blocks.
-#        Prevents faculty being co-faculty immediately before/after their lectures.
+# Enforce a 1-slot break between primary teaching and co-faculty blocks.
+# Prevents faculty being co-faculty immediately before/after their lectures.
 ENABLE_CO_FACULTY_BREAK: bool = True
 # ---------------------------------------------------------------------------
 
@@ -590,7 +586,7 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     add_no_faculty_clash(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["pg_core_code"], mappings["pg_sections"])
     add_co_faculty_logic(model, x2, co_fac, mappings["faculty_assignments"])
     add_max_workload(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["faculty_designations"],
-                     semester, count_cofac_in_workload=not EXCLUDE_COFAC_FROM_WORKLOAD_CAP)
+                     semester)
     add_no_section_clash(model, x1, x2, section_courses)
     add_weekly_hours(model, x1, x2, section_courses, course_info)
     add_no_student_gaps(model, x1, x2, section_courses)
@@ -673,10 +669,10 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     status_code = solver.Solve(model)
 
     status_map = {
-        cp_model.OPTIMAL: "OPTIMAL",
-        cp_model.FEASIBLE: "OPTIMAL", # Override FEASIBLE to display as OPTIMAL in UI
-        cp_model.INFEASIBLE: "INFEASIBLE",
-        cp_model.UNKNOWN: "UNKNOWN",
+        cp_model.OPTIMAL:       "OPTIMAL",
+        cp_model.FEASIBLE:      "FEASIBLE",
+        cp_model.INFEASIBLE:    "INFEASIBLE",
+        cp_model.UNKNOWN:       "UNKNOWN",
         cp_model.MODEL_INVALID: "MODEL_INVALID",
     }
     result["status"] = status_map.get(status_code, "UNKNOWN")
