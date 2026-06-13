@@ -330,7 +330,7 @@ if uploaded_file is not None:
     st.header("📖 Courses")
     st.subheader("Preview")
     if courses_records:
-        st.dataframe(courses_records, use_container_width=True)
+        st.dataframe(courses_records, width='stretch')
     else:
         st.info("No course records found.")
 

@@ -33,67 +33,75 @@ VALID_BLOCK_STARTS = [0, 2, 4, 5]  # pairs: S1-S2 (0,1), S3-S4 (2,3), S5-S6 (4,5
 # ===================================================================
 def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_core_code=None, pg_sections=None):
     """
-    For each faculty member, for each (day, slot): at most 1 teaching event.
-    Deduplicates the PG Shared Core course since SP-1 and SP-2 sit in the same room.
-    Also ensures they are not double-booked as a dynamic Co-Faculty.
+    For each faculty member, for each day: no two teaching events may overlap in time.
+
+    Uses NewOptionalFixedSizeIntervalVar + AddNoOverlap — one global constraint per
+    (faculty, day) instead of one sum() <= 1 per (faculty, day, slot). This gives the
+    CP-SAT propagator much stronger inference with fewer constraints.
+
+    PG Shared Core deduplication: SP-1 and SP-2 sit in the same room with the same
+    teacher, so only one interval is created per (faculty, course, day, slot).
 
     faculty_assignments: dict  faculty_name -> list of (section, course_code)
     """
-    # Build a lookup for co_fac variables by (fac_name, day, slot_it_covers)
-    # Since each co_fac block is 2 slots, it covers t and t+1.
-    cofac_lookup = defaultdict(list)
-    for (fac_name, sec, cc, d_var, t_var), var in co_fac.items():
-        cofac_lookup[(fac_name, d_var, t_var)].append(var)
-        cofac_lookup[(fac_name, d_var, t_var + 1)].append(var)
+    intervals_by_fac_day = defaultdict(list)   # (fac, d) -> list of OptionalIntervalVar
 
     for fac, assignments in faculty_assignments.items():
-        for d in range(NUM_DAYS):
-            for t in range(NUM_SLOTS):
-                terms = []
-                # To handle PG Shared Core, we should only count it once per faculty per time slot.
-                seen_pg_core_lecture = False
-                seen_pg_core_blocks = set()
+        seen_pg_core = set()   # (cc, d, t, etype) — dedup per faculty
 
-                for sec, cc in assignments:
-                    is_pg_core = (pg_shared_core_code and cc == pg_shared_core_code and pg_sections and sec in pg_sections)
-                    
-                    # 1-slot lectures
-                    key1 = (sec, cc, d, t)
-                    if key1 in x1:
-                        if is_pg_core:
-                            if not seen_pg_core_lecture:
-                                terms.append(x1[key1])
-                                seen_pg_core_lecture = True
-                        else:
-                            terms.append(x1[key1])
-                            
-                    # 2-slot blocks that COVER slot t
+        for sec, cc in assignments:
+            is_pg_core = (
+                pg_shared_core_code and cc == pg_shared_core_code
+                and pg_sections and sec in pg_sections
+            )
+
+            for d in range(NUM_DAYS):
+                # 1-slot lecture intervals
+                for t in range(NUM_SLOTS):
+                    key = (sec, cc, d, t)
+                    if key not in x1:
+                        continue
+                    if is_pg_core:
+                        dedup = (cc, d, t, "L")
+                        if dedup in seen_pg_core:
+                            continue
+                        seen_pg_core.add(dedup)
+                    iv = model.NewOptionalFixedSizeIntervalVar(
+                        t, 1, x1[key],
+                        f"iv_fac_L_{fac}_{sec}_{cc}_d{d}_t{t}"
+                    )
+                    intervals_by_fac_day[(fac, d)].append(iv)
+
+                # 2-slot block intervals
+                for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
-                        # block starting at t covers slots t, t+1
-                        key_start = (sec, cc, etype, d, t)
-                        if key_start in x2:
-                            if is_pg_core:
-                                if f"start_{etype}" not in seen_pg_core_blocks:
-                                    terms.append(x2[key_start])
-                                    seen_pg_core_blocks.add(f"start_{etype}")
-                            else:
-                                terms.append(x2[key_start])
-                        # block starting at t-1 covers slots t-1, t
-                        if t > 0:
-                            key_prev = (sec, cc, etype, d, t - 1)
-                            if key_prev in x2:
-                                if is_pg_core:
-                                    if f"prev_{etype}" not in seen_pg_core_blocks:
-                                        terms.append(x2[key_prev])
-                                        seen_pg_core_blocks.add(f"prev_{etype}")
-                                else:
-                                    terms.append(x2[key_prev])
-                
-                # Use optimized lookup for dynamic co-faculty blocks covering slot t
-                terms.extend(cofac_lookup[(fac, d, t)])
+                        key = (sec, cc, etype, d, t)
+                        if key not in x2:
+                            continue
+                        if is_pg_core:
+                            dedup = (cc, d, t, etype)
+                            if dedup in seen_pg_core:
+                                continue
+                            seen_pg_core.add(dedup)
+                        iv = model.NewOptionalFixedSizeIntervalVar(
+                            t, 2, x2[key],
+                            f"iv_fac_{etype}_{fac}_{sec}_{cc}_d{d}_t{t}"
+                        )
+                        intervals_by_fac_day[(fac, d)].append(iv)
 
-                if len(terms) > 1:
-                    model.Add(sum(terms) <= 1)
+    # Co-faculty practical blocks (always 2 slots)
+    for (fac_name, sec, cc, d, t_start), var in co_fac.items():
+        iv = model.NewOptionalFixedSizeIntervalVar(
+            t_start, 2, var,
+            f"iv_cofac_{fac_name}_{sec}_{cc}_d{d}_t{t_start}"
+        )
+        intervals_by_fac_day[(fac_name, d)].append(iv)
+
+    # One AddNoOverlap per (faculty, day) — solver resolves all slot conflicts
+    for (fac, d), ivs in intervals_by_fac_day.items():
+        if len(ivs) > 1:
+            model.AddNoOverlap(ivs)
+
 
 
 # ===================================================================
@@ -201,28 +209,43 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
 # ===================================================================
 def add_no_section_clash(model, x1, x2, section_courses):
     """
-    For each section, for each (day, slot): at most 1 course occupies the slot.
+    For each section, for each day: no two courses may occupy the same time slot.
+
+    Uses NewOptionalFixedSizeIntervalVar + AddNoOverlap — one constraint per
+    (section, day) instead of one sum() <= 1 per (section, day, slot).
 
     section_courses: dict  section -> list of course_codes
     """
+    intervals_by_sec_day = defaultdict(list)   # (sec, d) -> list of OptionalIntervalVar
+
     for sec, courses in section_courses.items():
-        for d in range(NUM_DAYS):
-            for t in range(NUM_SLOTS):
-                terms = []
-                for cc in courses:
-                    key1 = (sec, cc, d, t)
-                    if key1 in x1:
-                        terms.append(x1[key1])
+        for cc in courses:
+            for d in range(NUM_DAYS):
+                # 1-slot lectures
+                for t in range(NUM_SLOTS):
+                    key = (sec, cc, d, t)
+                    if key in x1:
+                        iv = model.NewOptionalFixedSizeIntervalVar(
+                            t, 1, x1[key],
+                            f"iv_sec_L_{sec}_{cc}_d{d}_t{t}"
+                        )
+                        intervals_by_sec_day[(sec, d)].append(iv)
+
+                # 2-slot blocks
+                for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
-                        key_start = (sec, cc, etype, d, t)
-                        if key_start in x2:
-                            terms.append(x2[key_start])
-                        if t > 0:
-                            key_prev = (sec, cc, etype, d, t - 1)
-                            if key_prev in x2:
-                                terms.append(x2[key_prev])
-                if len(terms) > 1:
-                    model.Add(sum(terms) <= 1)
+                        key = (sec, cc, etype, d, t)
+                        if key in x2:
+                            iv = model.NewOptionalFixedSizeIntervalVar(
+                                t, 2, x2[key],
+                                f"iv_sec_{etype}_{sec}_{cc}_d{d}_t{t}"
+                            )
+                            intervals_by_sec_day[(sec, d)].append(iv)
+
+    for (sec, d), ivs in intervals_by_sec_day.items():
+        if len(ivs) > 1:
+            model.AddNoOverlap(ivs)
+
 
 
 # ===================================================================
@@ -279,7 +302,7 @@ def add_weekly_hours(model, x1, x2, section_courses, course_info):
 # ===================================================================
 # H4 — No Student Gaps (Contiguous from S1)
 # ===================================================================
-def add_no_student_gaps(model, x1, x2, section_courses):
+def add_no_student_gaps(model, section_courses, slot_coverage_sec):
     """
     Ensures that if a section has a class at slot t, they MUST have a class at slot t-1.
     This forces all classes to be packed at the start of the day (S1 onwards),
@@ -290,31 +313,17 @@ def add_no_student_gaps(model, x1, x2, section_courses):
     a section may have morning classes only and no afternoon classes, which is valid.
     We still enforce contiguity within the morning block (S1–S4) and within the
     afternoon block (S5–S7) separately.
+
+    slot_coverage_sec: precomputed dict (sec, d, t) -> list of BoolVars covering slot t
+                       (includes x1 at t, x2 blocks starting at t, and x2 blocks starting at t-1).
     """
-    # S4 is index 3, S5 is index 4. The lunch gap is between indices 3 and 4.
     LUNCH_BOUNDARY = 3  # implication active[4] => active[3] is skipped
 
-    for sec, courses in section_courses.items():
+    for sec in section_courses:
         for d in range(NUM_DAYS):
-            # Build an is_active BoolVar for every slot
             active = []
             for t in range(NUM_SLOTS):
-                terms = []
-                for cc in courses:
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1:
-                        terms.append(x1[k1])
-
-                    # 2-slot blocks: covers t if block starts at t OR at t-1
-                    for etype in ("T", "P"):
-                        k_start = (sec, cc, etype, d, t)
-                        if k_start in x2:
-                            terms.append(x2[k_start])
-                        if t > 0:
-                            k_prev = (sec, cc, etype, d, t - 1)
-                            if k_prev in x2:
-                                terms.append(x2[k_prev])
-
+                terms = slot_coverage_sec.get((sec, d, t), [])
                 is_active = model.NewBoolVar(f"active_{sec}_d{d}_t{t}")
                 if terms:
                     model.AddMaxEquality(is_active, terms)
@@ -322,82 +331,61 @@ def add_no_student_gaps(model, x1, x2, section_courses):
                     model.Add(is_active == 0)
                 active.append(is_active)
 
-            # Enforce contiguity, but SKIP the lunch boundary (S4→S5)
+            # Enforce contiguity, but SKIP the lunch boundary (S4->S5)
             for t in range(NUM_SLOTS - 1):
                 if t == LUNCH_BOUNDARY:
                     continue  # S5 may be empty even if S4 is occupied
                 model.AddImplication(active[t + 1], active[t])
 
 
+
+
 # ===================================================================
 # H4.5 — Morning-first: ALL morning slots (S1-S4) must be filled every day
 # ===================================================================
-def add_morning_first(model, x1, x2, section_courses):
+def add_morning_first(model, section_courses, slot_coverage_sec):
     """
-    Hard constraint: For every section on every day (Mon-Fri), each of the
+    Hard constraint: For every UG section on every day (Mon-Fri), each of the
     4 morning slots (S1-S4, indices 0-3) MUST have a class. This is
     unconditional — morning is always fully occupied. Afternoon slots are
     only used for overflow once all 20 morning slots/week are taken.
+
+    slot_coverage_sec: precomputed dict (sec, d, t) -> list of BoolVars covering slot t.
     """
-    for sec, courses in section_courses.items():
+    for sec in section_courses:
         # PG sections have fewer total course-hours than UG sections and
         # cannot reliably fill all 4 morning slots every day — exempt them.
-        is_pg = "PG" in sec or "SP" in sec
+        if "PG" in sec or "SP" in sec:
+            continue  # EXEMPT PG sections from mandatory morning fill
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d == 4:
-                continue # EXEMPT 7th sem from Friday classes
-            if is_pg:
-                continue  # EXEMPT PG sections from mandatory morning fill
+                continue  # EXEMPT 7th sem from Friday classes
             for t in MORNING_SLOTS:  # [0, 1, 2, 3]
-                # Collect every variable that makes this slot occupied
-                terms = []
-                for cc in courses:
-                    # 1-slot lecture
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1:
-                        terms.append(x1[k1])
-                    # 2-slot block starting at t (covers t and t+1)
-                    for etype in ("T", "P"):
-                        k_start = (sec, cc, etype, d, t)
-                        if k_start in x2:
-                            terms.append(x2[k_start])
-                        # 2-slot block starting at t-1 (covers t-1 and t)
-                        if t > 0:
-                            k_prev = (sec, cc, etype, d, t - 1)
-                            if k_prev in x2:
-                                terms.append(x2[k_prev])
-
-                # At least one course must occupy this morning slot
-                # Skip sections that don't have enough vars (e.g. PG sections with fewer courses)
+                terms = slot_coverage_sec.get((sec, d, t), [])
                 if terms:
                     model.Add(sum(terms) >= 1)
+
 
 
 # ===================================================================
 # H4.6 — No empty days (every day must have at least one class)
 # ===================================================================
-def add_no_empty_days(model, x1, x2, section_courses):
+def add_no_empty_days(model, section_courses, event_vars_sec):
     """
     For every section, every day (Monday–Friday) must have at least one
     teaching event (lecture, tutorial, or practical). No day can be blank.
+
+    event_vars_sec: precomputed dict (sec, d) -> list of distinct event BoolVars
+                    (each x1/x2 variable counted once — no double-counting for 2-slot blocks).
     """
-    for sec, courses in section_courses.items():
+    for sec in section_courses:
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d == 4:
-                continue # EXEMPT 7th sem from Friday classes
-            day_terms = []
-            for cc in courses:
-                for t in range(NUM_SLOTS):
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1:
-                        day_terms.append(x1[k1])
-                for t in VALID_BLOCK_STARTS:
-                    for etype in ("T", "P"):
-                        k2 = (sec, cc, etype, d, t)
-                        if k2 in x2:
-                            day_terms.append(x2[k2])
-            if day_terms:
-                model.Add(sum(day_terms) >= 1)
+                continue  # EXEMPT 7th sem from Friday classes
+            terms = event_vars_sec.get((sec, d), [])
+            if terms:
+                model.Add(sum(terms) >= 1)
+
 
 
 # ===================================================================
@@ -738,24 +726,21 @@ def add_cse_lab_locks(model, x1, x2, lab_allocations):
 # ===================================================================
 # S1 — Spread subjects across days (soft)
 # ===================================================================
-def add_spread_constraint(model, x1, x2, section_courses):
+def add_spread_constraint(model, section_courses, course_day_events):
     """
-    HARD constraint: at most 1 lecture/block of the same subject per day.
-    This guarantees subjects are spread across different days.
+    HARD constraint: at most 1 lecture/block of the same subject per (section, day).
+    This guarantees subjects are spread across different days of the week.
+
+    course_day_events: precomputed dict (sec, cc, d) -> list of distinct event BoolVars
+                       for that course on that day (x1 and x2 each counted once).
     """
     for sec, courses in section_courses.items():
         for cc in courses:
             for d in range(NUM_DAYS):
-                day_vars = []
-                for t in range(NUM_SLOTS):
-                    if (sec, cc, d, t) in x1:
-                        day_vars.append(x1[(sec, cc, d, t)])
-                for t in VALID_BLOCK_STARTS:
-                    for etype in ("T", "P"):
-                        if (sec, cc, etype, d, t) in x2:
-                            day_vars.append(x2[(sec, cc, etype, d, t)])
+                day_vars = course_day_events.get((sec, cc, d), [])
                 if len(day_vars) >= 2:
                     model.Add(sum(day_vars) <= 1)
+
 
 
 # ===================================================================
@@ -854,31 +839,24 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
         # sum(room_vars) == active_var  (1 if scheduled, 0 if not)
         model.Add(sum(room_vars) == active_var)
 
-    # Constraint 3: no room double-booking
-    # Two events conflict if their occupied slots overlap on the same day+room.
-    
-    # NEW: Build a lookup for events covering each (day, slot)
-    slot_to_events = defaultdict(list)
-    for i, (sec, cc, etype, d2, t2, duration, active_var) in enumerate(needs_room):
-        # Store index i and the room-assignment variable for this event
-        slot_to_events[(d2, t2)].append(i)
-        if duration == 2:
-            slot_to_events[(d2, t2 + 1)].append(i)
+    # Constraint 3: no room double-booking via AddNoOverlap
+    # Each (event, room) pair becomes an optional interval; AddNoOverlap on intervals
+    # grouped by (room, day) prevents any two events from sharing a room at the same time.
+    room_intervals = defaultdict(list)   # (room, d) -> list of OptionalIntervalVar
+    for (sec, cc, etype, d, t, duration, active_var) in needs_room:
+        for room in LAB_ROOMS:
+            room_var = lab_room.get((sec, cc, etype, d, t, room))
+            if room_var is None:
+                continue
+            iv = model.NewOptionalFixedSizeIntervalVar(
+                t, duration, room_var,
+                f"iv_room_{room}_{sec}_{cc}_{etype}_d{d}_t{t}"
+            )
+            room_intervals[(room, d)].append(iv)
 
-    for room in LAB_ROOMS:
-        for d in range(NUM_DAYS):
-            for t in range(NUM_SLOTS):
-                # Collect all room-vars whose event covers slot t
-                covering = []
-                event_indices = slot_to_events[(d, t)]
-                for idx in event_indices:
-                    (sec, cc, etype, d2, t2, duration, active_var) = needs_room[idx]
-                    k_room = (sec, cc, etype, d, t2, room)
-                    if k_room in lab_room:
-                        covering.append(lab_room[k_room])
-                            
-                if len(covering) > 1:
-                    model.Add(sum(covering) <= 1)
+    for (room, d), ivs in room_intervals.items():
+        if len(ivs) > 1:
+            model.AddNoOverlap(ivs)
 
     # Constraint 4: blocked rooms from 1st/2nd sem CSE lab locks
     for (room, d, t) in blocked_room_slots:

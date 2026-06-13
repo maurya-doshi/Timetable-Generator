@@ -582,6 +582,38 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
                                         mappings["faculty_designations"],
                                         mappings["faculty_assignments"])
 
+    # ── Precomputed index maps ────────────────────────────────────────────────
+    # Built once here and passed to constraint functions that previously iterated
+    # over x1/x2 internally, eliminating redundant nested loops.
+
+    # slot_coverage_sec[(sec, d, t)]: all BoolVars that COVER slot t for section
+    # sec on day d. A lecture covers only its slot; a 2-slot block covers t_start
+    # and t_start+1. Used by: add_no_student_gaps, add_morning_first.
+    slot_coverage_sec = defaultdict(list)
+    for (sec, cc, d, t), var in x1.items():
+        slot_coverage_sec[(sec, d, t)].append(var)
+    for (sec, cc, etype, d, t_start), var in x2.items():
+        slot_coverage_sec[(sec, d, t_start)].append(var)
+        slot_coverage_sec[(sec, d, t_start + 1)].append(var)
+
+    # event_vars_sec[(sec, d)]: one BoolVar per distinct teaching event
+    # (no double-counting — each x1/x2 var appears exactly once).
+    # Used by: add_no_empty_days.
+    event_vars_sec = defaultdict(list)
+    for (sec, cc, d, t), var in x1.items():
+        event_vars_sec[(sec, d)].append(var)
+    for (sec, cc, etype, d, t_start), var in x2.items():
+        event_vars_sec[(sec, d)].append(var)
+
+    # course_day_events[(sec, cc, d)]: all event BoolVars for one course on one day.
+    # Used by: add_spread_constraint.
+    course_day_events = defaultdict(list)
+    for (sec, cc, d, t), var in x1.items():
+        course_day_events[(sec, cc, d)].append(var)
+    for (sec, cc, etype, d, t_start), var in x2.items():
+        course_day_events[(sec, cc, d)].append(var)
+    # ────────────────────────────────────────────────────────────────────────
+
     # Hard constraints
     add_no_faculty_clash(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["pg_core_code"], mappings["pg_sections"])
     add_co_faculty_logic(model, x2, co_fac, mappings["faculty_assignments"])
@@ -589,7 +621,7 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
                      semester)
     add_no_section_clash(model, x1, x2, section_courses)
     add_weekly_hours(model, x1, x2, section_courses, course_info)
-    add_no_student_gaps(model, x1, x2, section_courses)
+    add_no_student_gaps(model, section_courses, slot_coverage_sec)
     add_faculty_break(model, x1, x2, faculty_assignments, co_fac=co_fac)
     if ENABLE_CO_FACULTY_BREAK:  # TEMPORARY FIX
         add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments)
@@ -600,11 +632,11 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     lab_room = add_lab_room_assignment(model, x1, x2, section_courses, course_info,
                                        mappings["pg_sections"], _blocked)
     add_friday_half_day(model, x1, x2, section_courses)
-    add_morning_first(model, x1, x2, section_courses)
-    add_no_empty_days(model, x1, x2, section_courses)
+    add_morning_first(model, section_courses, slot_coverage_sec)
+    add_no_empty_days(model, section_courses, event_vars_sec)
 
     # Hard quality constraints (formerly soft)
-    add_spread_constraint(model, x1, x2, section_courses)
+    add_spread_constraint(model, section_courses, course_day_events)
     add_first_slot_constraint(model, x1, x2, section_courses)
 
     # Special subject constraints
