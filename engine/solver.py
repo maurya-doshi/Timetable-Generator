@@ -24,8 +24,6 @@ from engine.constraints import (
     add_no_section_clash,
     add_weekly_hours,
     add_no_student_gaps,
-    add_faculty_break,
-    add_co_faculty_break,      # TEMPORARY FIX — H5.5
     add_oe_concurrency,
     add_aec_concurrency,
     add_pg_shared,
@@ -41,13 +39,6 @@ from engine.constraints import (
     add_no_empty_days,
 )
 
-# ---------------------------------------------------------------------------
-# FIX FLAGS
-# ---------------------------------------------------------------------------
-# Enforce a 1-slot break between primary teaching and co-faculty blocks.
-# Prevents faculty being co-faculty immediately before/after their lectures.
-ENABLE_CO_FACULTY_BREAK: bool = True
-# ---------------------------------------------------------------------------
 
 DAYS_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 SLOTS_LABELS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7"]
@@ -612,20 +603,32 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
         course_day_events[(sec, cc, d)].append(var)
     for (sec, cc, etype, d, t_start), var in x2.items():
         course_day_events[(sec, cc, d)].append(var)
+
+    # events_by_fac[fac]: all primary event BoolVars for that faculty member
+    # (x1 + x2 vars for every (sec, cc) they teach, each var counted exactly once).
+    # Used by: add_max_workload.
+    events_by_fac = defaultdict(list)
+    fac_assignments = mappings["faculty_assignments"]
+    x1_by_sec_cc = defaultdict(list)
+    for (sec, cc, d, t), var in x1.items():
+        x1_by_sec_cc[(sec, cc)].append(var)
+    x2_by_sec_cc = defaultdict(list)
+    for (sec, cc, etype, d, t_start), var in x2.items():
+        x2_by_sec_cc[(sec, cc)].append(var)
+    for fac, assignments in fac_assignments.items():
+        for sec, cc in assignments:
+            events_by_fac[fac].extend(x1_by_sec_cc.get((sec, cc), []))
+            events_by_fac[fac].extend(x2_by_sec_cc.get((sec, cc), []))
     # ────────────────────────────────────────────────────────────────────────
 
     # Hard constraints
     add_no_faculty_clash(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["pg_core_code"], mappings["pg_sections"])
     add_co_faculty_logic(model, x2, co_fac, mappings["faculty_assignments"])
-    add_max_workload(model, x1, x2, co_fac, mappings["faculty_assignments"], mappings["faculty_designations"],
-                     semester)
+    add_max_workload(model, co_fac, mappings["faculty_assignments"], mappings["faculty_designations"],
+                     events_by_fac, semester)
     add_no_section_clash(model, x1, x2, section_courses)
     add_weekly_hours(model, x1, x2, section_courses, course_info)
     add_no_student_gaps(model, section_courses, slot_coverage_sec)
-    add_faculty_break(model, x1, x2, faculty_assignments, co_fac=co_fac)
-    if ENABLE_CO_FACULTY_BREAK:  # TEMPORARY FIX
-        add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments)
-
     # CSE lab locks — returns blocked (room, day, slot) tuples
     _blocked = add_cse_lab_locks(model, x1, x2, mappings["lab_alloc"])
 

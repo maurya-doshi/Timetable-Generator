@@ -33,14 +33,23 @@ VALID_BLOCK_STARTS = [0, 2, 4, 5]  # pairs: S1-S2 (0,1), S3-S4 (2,3), S5-S6 (4,5
 # ===================================================================
 def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_core_code=None, pg_sections=None):
     """
-    For each faculty member, for each day: no two teaching events may overlap in time.
+    For each faculty member, for each day: no two teaching events may overlap AND
+    every event must be followed by at least 1 free slot before the next.
 
-    Uses NewOptionalFixedSizeIntervalVar + AddNoOverlap — one global constraint per
-    (faculty, day) instead of one sum() <= 1 per (faculty, day, slot). This gives the
-    CP-SAT propagator much stronger inference with fewer constraints.
+    **Technique 3 — Padded intervals:**
+    Instead of a separate add_faculty_break pass, all intervals are created with
+    duration = (event_duration + 1). AddNoOverlap on padded intervals then enforces
+    both H1 (no double-booking) and H6/H6.5 (1-slot gap between classes) in a single
+    constraint per (faculty, day), replacing add_faculty_break and add_co_faculty_break.
 
-    PG Shared Core deduplication: SP-1 and SP-2 sit in the same room with the same
-    teacher, so only one interval is created per (faculty, course, day, slot).
+      Lecture  (1-slot)  → padded duration 2  |S_t, S_t+1 reserved|
+      Block    (2-slot)  → padded duration 3  |S_t, S_t+1, S_t+2 reserved|
+      Co-fac   (2-slot)  → padded duration 3
+
+    The "overflow" beyond the last slot is harmless: no interval starts past S7.
+
+    PG Shared Core deduplication: SP-1 and SP-2 sit in the same room with the
+    same teacher, so only one interval is created per (faculty, course, day, slot).
 
     faculty_assignments: dict  faculty_name -> list of (section, course_code)
     """
@@ -56,7 +65,7 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
             )
 
             for d in range(NUM_DAYS):
-                # 1-slot lecture intervals
+                # 1-slot lecture → padded to duration 2
                 for t in range(NUM_SLOTS):
                     key = (sec, cc, d, t)
                     if key not in x1:
@@ -67,12 +76,12 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
                             continue
                         seen_pg_core.add(dedup)
                     iv = model.NewOptionalFixedSizeIntervalVar(
-                        t, 1, x1[key],
+                        t, 2, x1[key],
                         f"iv_fac_L_{fac}_{sec}_{cc}_d{d}_t{t}"
                     )
                     intervals_by_fac_day[(fac, d)].append(iv)
 
-                # 2-slot block intervals
+                # 2-slot block → padded to duration 3
                 for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
                         key = (sec, cc, etype, d, t)
@@ -84,20 +93,22 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
                                 continue
                             seen_pg_core.add(dedup)
                         iv = model.NewOptionalFixedSizeIntervalVar(
-                            t, 2, x2[key],
+                            t, 3, x2[key],
                             f"iv_fac_{etype}_{fac}_{sec}_{cc}_d{d}_t{t}"
                         )
                         intervals_by_fac_day[(fac, d)].append(iv)
 
-    # Co-faculty practical blocks (always 2 slots)
+    # Co-faculty practical blocks (2-slot) → padded to duration 3
     for (fac_name, sec, cc, d, t_start), var in co_fac.items():
         iv = model.NewOptionalFixedSizeIntervalVar(
-            t_start, 2, var,
+            t_start, 3, var,
             f"iv_cofac_{fac_name}_{sec}_{cc}_d{d}_t{t_start}"
         )
         intervals_by_fac_day[(fac_name, d)].append(iv)
 
-    # One AddNoOverlap per (faculty, day) — solver resolves all slot conflicts
+    # One AddNoOverlap per (faculty, day):
+    #   - prevents double-booking (H1 / H1.5)
+    #   - the +1 padding enforces the mandatory 1-slot break (H6 / H6.5)
     for (fac, d), ivs in intervals_by_fac_day.items():
         if len(ivs) > 1:
             model.AddNoOverlap(ivs)
@@ -129,8 +140,8 @@ def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
             model.Add(sum(all_vars) == 2 * prac_var)
 
 
-def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designations,
-                     semester="odd", count_cofac_in_workload=None):
+def add_max_workload(model, co_fac, faculty_assignments, faculty_designations,
+                     events_by_fac, semester="odd", count_cofac_in_workload=None):
     """
     Enforces a per-faculty workload cap based on designation.
 
@@ -152,6 +163,10 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
 
     The `count_cofac_in_workload` parameter is kept for API compatibility
     but is no longer used — co-faculty blocks always count toward the cap.
+
+    events_by_fac: precomputed dict  faculty_name -> list of primary BoolVars
+                   (x1 + x2 vars for all (section, course) in that faculty's assignments,
+                    each var counted once). Co-faculty vars are added separately below.
     """
     if semester.lower() == "odd":
         caps = {"Professor": 18, "Associate": 24, "Assistant": 28}
@@ -170,25 +185,9 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
         max_units = caps.get(desig, 28)
         max_events = max_units // 2   # e.g. 28 units → 14 events
 
-        events = []
-
-        # Primary lectures (iterate all slots — x1 is keyed by any slot)
-        for sec, cc in assignments:
-            for d in range(NUM_DAYS):
-                for t in range(NUM_SLOTS):
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1:
-                        events.append(x1[k1])
-
-                # Blocks — MUST use VALID_BLOCK_STARTS only
-                for t in VALID_BLOCK_STARTS:
-                    for etype in ("T", "P"):
-                        k2 = (sec, cc, etype, d, t)
-                        if k2 in x2:
-                            events.append(x2[k2])
-
-        # Co-faculty lab blocks always count
-        events.extend(cofac_by_fac[fac])
+        # Primary events from precomputed map + co-faculty blocks
+        events = list(events_by_fac.get(fac, []))
+        events.extend(cofac_by_fac.get(fac, []))
 
         if not events:
             continue
@@ -202,6 +201,7 @@ def add_max_workload(model, x1, x2, co_fac, faculty_assignments, faculty_designa
     # Global redundant cut: helps solver prove bounds faster
     if all_faculty_events:
         model.Add(sum(all_faculty_events) <= total_upper_events)
+
 
 
 # ===================================================================
@@ -387,147 +387,38 @@ def add_no_empty_days(model, section_courses, event_vars_sec):
                 model.Add(sum(terms) >= 1)
 
 
-
+# ===================================================================
+# H6 — Faculty Break (merged into add_no_faculty_clash via padded intervals)
 # ===================================================================
 def add_faculty_break(model, x1, x2, faculty_assignments, co_fac=None):
     """
-    After any primary teaching event, faculty must have ≥1 free slot before
-    their next primary event on the same day.
+    DEPRECATED — no longer called.
 
-    Rules enforced:
-      1. Primary lecture at t → no primary event starts at t+1.
-      2. Primary 2-slot block ending at t (i.e. started at t-1) → no primary
-         event starts at t+1.
-
-    x2 keys only exist for VALID_BLOCK_STARTS = [0, 2, 4, 5]. The inner loops
-    now iterate only over those starts to avoid silent no-ops when t is not a
-    valid block start.
-
-    Note: co-fac ↔ primary break is handled separately by add_co_faculty_break.
+    H6 (1-slot faculty break between consecutive classes) is now enforced
+    automatically by the padded interval durations in add_no_faculty_clash:
+      - lecture duration 1 → padded 2  (reserves the next slot)
+      - block   duration 2 → padded 3  (reserves the slot after the block)
+    AddNoOverlap on those padded intervals subsumes both H1 and H6.
     """
-    for fac, assignments in faculty_assignments.items():
-        for d in range(NUM_DAYS):
-            for t in range(NUM_SLOTS):
-                # --- lectures that occupy exactly slot t ---
-                lec_terms = []
-                for sec, cc in assignments:
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1:
-                        lec_terms.append(x1[k1])
-
-                # --- blocks that END at slot t (started at t-1) ---
-                # A block at start s covers slots s and s+1, so it ends at s+1.
-                # We need s = t-1 and s must be in VALID_BLOCK_STARTS.
-                block_end_terms = []
-                if t > 0 and (t - 1) in VALID_BLOCK_STARTS:
-                    for sec, cc in assignments:
-                        for etype in ("T", "P"):
-                            key_prev = (sec, cc, etype, d, t - 1)
-                            if key_prev in x2:
-                                block_end_terms.append(x2[key_prev])
-
-                if not lec_terms and not block_end_terms:
-                    continue
-
-                # --- everything that could START at slot t+1 ---
-                if t + 1 >= NUM_SLOTS:
-                    continue
-
-                next_start_terms = []
-                for sec, cc in assignments:
-                    k_next = (sec, cc, d, t + 1)
-                    if k_next in x1:
-                        next_start_terms.append(x1[k_next])
-                    # Only check t+1 as a block start if it is valid
-                    if (t + 1) in VALID_BLOCK_STARTS:
-                        for etype in ("T", "P"):
-                            k_nb = (sec, cc, etype, d, t + 1)
-                            if k_nb in x2:
-                                next_start_terms.append(x2[k_nb])
-
-                if not next_start_terms:
-                    continue
-
-                # Rule 1: lecture at t → nothing starts at t+1
-                for lv in lec_terms:
-                    for nv in next_start_terms:
-                        model.Add(lv + nv <= 1)
-
-                # Rule 2: block ending at t → nothing starts at t+1
-                for bv in block_end_terms:
-                    for nv in next_start_terms:
-                        model.Add(bv + nv <= 1)
-
+    pass
 
 
 # ===================================================================
-# H5.5 — Co-faculty adjacency break (TEMPORARY FIX)
+# H6.5 — Co-faculty break (merged into add_no_faculty_clash via padded intervals)
 # ===================================================================
 def add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments):
     """
-    TEMPORARY FIX: Ensures a 1-slot gap between a faculty's primary teaching
-    events and any co-faculty practical blocks they are assigned to.
+    DEPRECATED — no longer called.
 
-    Rules:
-      A) After a primary event ends at slot t → co-fac block cannot START at t+1.
-      B) After a co-fac block ends at t+1 (started at t) → no primary event
-         can START at t+2.
-
-    To revert: set ENABLE_CO_FACULTY_BREAK = False in solver.py.
+    H6.5 (1-slot gap between primary events and co-faculty blocks, and between
+    consecutive co-faculty duties) is now fully enforced by the padded interval
+    durations in add_no_faculty_clash. Co-faculty intervals use duration=3
+    (2-slot block + 1-slot padding), so AddNoOverlap automatically enforces:
+      Rule A) primary ends at t → no co-fac starts at t+1
+      Rule B) co-fac ends at t+1 → no primary starts at t+2
+      Rule C) no two co-fac duties back-to-back without a gap
     """
-    # Build fast lookup: (fac, d) -> list of (t_start, var)
-    fac_cofac_by_day = defaultdict(list)
-    for (fac_name, sec, cc, d, t_start), var in co_fac.items():
-        fac_cofac_by_day[(fac_name, d)].append((t_start, var))
-
-    for fac, assignments in faculty_assignments.items():
-        for d in range(NUM_DAYS):
-            cofac_today = fac_cofac_by_day.get((fac, d), [])
-            if not cofac_today:
-                continue
-
-            for t in range(NUM_SLOTS):
-                # --- Primary events that END at slot t ---
-                primary_ending_at_t = []
-                for sec, cc in assignments:
-                    k1 = (sec, cc, d, t)
-                    if k1 in x1:
-                        primary_ending_at_t.append(x1[k1])  # lecture at t
-                    if t > 0:
-                        for etype in ("T", "P"):
-                            k_prev = (sec, cc, etype, d, t - 1)
-                            if k_prev in x2:
-                                primary_ending_at_t.append(x2[k_prev])  # block t-1,t
-
-                # Rule A: primary ends at t → no co-fac block starts at t+1
-                if t + 1 < NUM_SLOTS and primary_ending_at_t:
-                    cofac_next = [v for (ts, v) in cofac_today if ts == t + 1]
-                    for pv in primary_ending_at_t:
-                        for cv in cofac_next:
-                            model.Add(pv + cv <= 1)
-
-                # Rule B: co-fac starts at t (ends at t+1) → no primary starts at t+2
-                cofac_at_t = [v for (ts, v) in cofac_today if ts == t]
-                if t + 2 < NUM_SLOTS and cofac_at_t:
-                    primary_starting_t2 = []
-                    for sec, cc in assignments:
-                        k1 = (sec, cc, d, t + 2)
-                        if k1 in x1:
-                            primary_starting_t2.append(x1[k1])
-                        for etype in ("T", "P"):
-                            k2 = (sec, cc, etype, d, t + 2)
-                            if k2 in x2:
-                                primary_starting_t2.append(x2[k2])
-                    for cv in cofac_at_t:
-                        for pv in primary_starting_t2:
-                            model.Add(cv + pv <= 1)
-
-                    # Rule C: co-fac starts at t (ends at t+1) → no OTHER co-fac
-                    #         block starts at t+2 (1-slot break between co-fac duties)
-                    cofac_at_t2 = [v for (ts, v) in cofac_today if ts == t + 2]
-                    for cv1 in cofac_at_t:
-                        for cv2 in cofac_at_t2:
-                            model.Add(cv1 + cv2 <= 1)
+    pass
 
 
 # ===================================================================
