@@ -55,7 +55,14 @@ st.divider()
 st.header("⚙️ Solver Settings")
 col1, col2 = st.columns(2)
 with col1:
-    time_limit = st.slider("Solver time limit (seconds)", 10, 900, 60, step=10)
+    time_limit = st.number_input(
+        "Solver time limit (seconds)",
+        min_value=10,
+        max_value=86400,
+        value=60,
+        step=10,
+        help="How long the solver is allowed to run. Longer = better quality result.",
+    )
 with col2:
     st.info(f"Solver will stop after **{time_limit}s** and return the best solution found.")
 
