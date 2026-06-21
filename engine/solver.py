@@ -573,49 +573,49 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
                                         mappings["faculty_designations"],
                                         mappings["faculty_assignments"])
 
-    # ── Precomputed index maps ────────────────────────────────────────────────
-    # Built once here and passed to constraint functions that previously iterated
-    # over x1/x2 internally, eliminating redundant nested loops.
+    # ── Precomputed index maps (2 passes: one over x1, one over x2) ────────────
+    # All 11 maps are populated here and passed to constraint functions,
+    # eliminating all internal x1/x2 iteration inside those functions.
 
-    # slot_coverage_sec[(sec, d, t)]: all BoolVars that COVER slot t for section
-    # sec on day d. A lecture covers only its slot; a 2-slot block covers t_start
-    # and t_start+1. Used by: add_no_student_gaps, add_morning_first.
-    slot_coverage_sec = defaultdict(list)
+    slot_coverage_sec   = defaultdict(list)  # (sec, d, t)           → BoolVars covering slot t
+    event_vars_sec      = defaultdict(list)  # (sec, d)              → all distinct event vars
+    course_day_events   = defaultdict(list)  # (sec, cc, d)          → event vars per course/day
+    x1_by_sec_cc        = defaultdict(list)  # (sec, cc)             → lecture vars
+    x1_keys_by_sec_cc   = defaultdict(list)  # (sec, cc)             → [(d, t, var)]
+    x1_t0_by_sec_cc     = defaultdict(list)  # (sec, cc)             → lecture vars at t=0
+
     for (sec, cc, d, t), var in x1.items():
         slot_coverage_sec[(sec, d, t)].append(var)
+        event_vars_sec[(sec, d)].append(var)
+        course_day_events[(sec, cc, d)].append(var)
+        x1_by_sec_cc[(sec, cc)].append(var)
+        x1_keys_by_sec_cc[(sec, cc)].append((d, t, var))
+        if t == 0:
+            x1_t0_by_sec_cc[(sec, cc)].append(var)
+
+    x2T_by_sec_cc       = defaultdict(list)  # (sec, cc)             → tutorial block vars
+    x2P_by_sec_cc       = defaultdict(list)  # (sec, cc)             → practical block vars
+    x2_by_sec_cc        = defaultdict(list)  # (sec, cc)             → all x2 vars
+    x2_by_sec_dt_etype  = defaultdict(list)  # (sec, d, t, etype)    → block vars by slot+type
+    x2_t0_by_sec_cc     = defaultdict(list)  # (sec, cc)             → block vars at t_start=0
+
     for (sec, cc, etype, d, t_start), var in x2.items():
         slot_coverage_sec[(sec, d, t_start)].append(var)
         slot_coverage_sec[(sec, d, t_start + 1)].append(var)
-
-    # event_vars_sec[(sec, d)]: one BoolVar per distinct teaching event
-    # (no double-counting — each x1/x2 var appears exactly once).
-    # Used by: add_no_empty_days.
-    event_vars_sec = defaultdict(list)
-    for (sec, cc, d, t), var in x1.items():
         event_vars_sec[(sec, d)].append(var)
-    for (sec, cc, etype, d, t_start), var in x2.items():
-        event_vars_sec[(sec, d)].append(var)
-
-    # course_day_events[(sec, cc, d)]: all event BoolVars for one course on one day.
-    # Used by: add_spread_constraint.
-    course_day_events = defaultdict(list)
-    for (sec, cc, d, t), var in x1.items():
         course_day_events[(sec, cc, d)].append(var)
-    for (sec, cc, etype, d, t_start), var in x2.items():
-        course_day_events[(sec, cc, d)].append(var)
-
-    # events_by_fac[fac]: all primary event BoolVars for that faculty member
-    # (x1 + x2 vars for every (sec, cc) they teach, each var counted exactly once).
-    # Used by: add_max_workload.
-    events_by_fac = defaultdict(list)
-    fac_assignments = mappings["faculty_assignments"]
-    x1_by_sec_cc = defaultdict(list)
-    for (sec, cc, d, t), var in x1.items():
-        x1_by_sec_cc[(sec, cc)].append(var)
-    x2_by_sec_cc = defaultdict(list)
-    for (sec, cc, etype, d, t_start), var in x2.items():
         x2_by_sec_cc[(sec, cc)].append(var)
-    for fac, assignments in fac_assignments.items():
+        x2_by_sec_dt_etype[(sec, d, t_start, etype)].append(var)
+        if etype == "T":
+            x2T_by_sec_cc[(sec, cc)].append(var)
+        else:
+            x2P_by_sec_cc[(sec, cc)].append(var)
+        if t_start == 0:
+            x2_t0_by_sec_cc[(sec, cc)].append(var)
+
+    # events_by_fac[fac]: all primary event BoolVars per faculty (used by add_max_workload)
+    events_by_fac = defaultdict(list)
+    for fac, assignments in mappings["faculty_assignments"].items():
         for sec, cc in assignments:
             events_by_fac[fac].extend(x1_by_sec_cc.get((sec, cc), []))
             events_by_fac[fac].extend(x2_by_sec_cc.get((sec, cc), []))
@@ -627,30 +627,33 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     add_max_workload(model, co_fac, mappings["faculty_assignments"], mappings["faculty_designations"],
                      events_by_fac, semester)
     add_no_section_clash(model, x1, x2, section_courses)
-    add_weekly_hours(model, x1, x2, section_courses, course_info)
+    add_weekly_hours(model, section_courses, course_info,
+                     x1_by_sec_cc, x2T_by_sec_cc, x2P_by_sec_cc)
     add_no_student_gaps(model, section_courses, slot_coverage_sec)
     # CSE lab locks — returns blocked (room, day, slot) tuples
     _blocked = add_cse_lab_locks(model, x1, x2, mappings["lab_alloc"])
 
     lab_room = add_lab_room_assignment(model, x1, x2, section_courses, course_info,
                                        mappings["pg_sections"], _blocked)
-    add_friday_half_day(model, x1, x2, section_courses)
+    add_friday_half_day(model, x1, x2, section_courses, course_day_events)
     add_morning_first(model, section_courses, slot_coverage_sec)
     add_no_empty_days(model, section_courses, event_vars_sec)
 
     # Hard quality constraints (formerly soft)
     add_spread_constraint(model, section_courses, course_day_events)
-    add_first_slot_constraint(model, x1, x2, section_courses)
+    add_first_slot_constraint(model, section_courses, x1_t0_by_sec_cc, x2_t0_by_sec_cc)
 
     # Special subject constraints
     if mappings["oe_codes"]:
-        add_oe_concurrency(model, x1, section_courses, mappings["oe_codes"])
+        add_oe_concurrency(model, section_courses, mappings["oe_codes"], x1_keys_by_sec_cc)
     if mappings["aec_codes"]:
-        add_aec_concurrency(model, x1, section_courses, mappings["aec_codes"],
-                            mappings["sections_3rd"], mappings["sections_4th"])
+        add_aec_concurrency(model, section_courses, mappings["aec_codes"],
+                            mappings["sections_3rd"], mappings["sections_4th"],
+                            x1_keys_by_sec_cc)
     if mappings["pg_sections"]:
-        add_pg_shared(model, x1, x2, section_courses, mappings["pg_sections"],
-                      mappings["pg_core_code"], mappings["pg_pe_codes"])
+        add_pg_shared(model, section_courses, mappings["pg_sections"],
+                      mappings["pg_core_code"], mappings["pg_pe_codes"],
+                      x1_by_sec_cc, x2_by_sec_dt_etype)
     if mappings["maths_slots"]:
         add_maths_locks(model, x1, x2, mappings["maths_slots"])
 
@@ -699,7 +702,8 @@ def build_and_solve(semester: str = "odd", time_limit_seconds: int = 60):
     solver.parameters.log_search_progress = True
     solver.parameters.relative_gap_limit = 0.05  # stop if within 5% of optimal
     solver.parameters.absolute_gap_limit = 30.0   # objective is now much smaller
-    solver.parameters.linearization_level = 2     # stronger LP relaxation bounds
+    solver.parameters.linearization_level = 1     # AddNoOverlap propagator > LP for scheduling
+    solver.parameters.interleave_search = True     # workers share progress more aggressively
 
     status_code = solver.Solve(model)
 
