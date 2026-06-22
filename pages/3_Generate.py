@@ -87,21 +87,46 @@ if not checks_ok:
     st.stop()
 
 if st.button("🚀 Generate Timetable", type="primary", use_container_width=True):
-    with st.spinner("Building model and solving… this may take some time."):
+    progress_bar = st.progress(0.0, text="Building model and solving... (0s elapsed)")
+    
+    import threading
+    import time
+    
+    result_container = {}
+    def run_solver():
         try:
             from engine.solver import build_and_solve
-            result = build_and_solve(
+            result_container["result"] = build_and_solve(
                 semester=semester.lower(),
                 time_limit_seconds=time_limit,
             )
         except Exception as e:
-            st.error(f"Solver crashed: {e}")
             import traceback
-            st.code(traceback.format_exc())
-            st.stop()
+            result_container["error"] = str(e)
+            result_container["traceback"] = traceback.format_exc()
+
+    solver_thread = threading.Thread(target=run_solver)
+    solver_thread.start()
+    
+    start_time = time.time()
+    while solver_thread.is_alive():
+        elapsed = int(time.time() - start_time)
+        # Cap progress at 99% until thread finishes
+        pct = min(elapsed / time_limit, 0.99)
+        progress_bar.progress(pct, text=f"Building model and solving... ({elapsed}s elapsed)")
+        time.sleep(0.5)
+        
+    solver_thread.join()
+    final_elapsed = int(time.time() - start_time)
+    progress_bar.progress(1.0, text=f"Finished in {final_elapsed}s!")
+    
+    if "error" in result_container:
+        st.error(f"Solver crashed: {result_container['error']}")
+        st.code(result_container["traceback"])
+        st.stop()
 
     # Store result in session state
-    st.session_state["solver_result"] = result
+    st.session_state["solver_result"] = result_container["result"]
 
 # -----------------------------------------------------------------------
 # Display results (from session state)
