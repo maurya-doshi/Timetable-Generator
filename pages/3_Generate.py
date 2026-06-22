@@ -2,6 +2,17 @@ import streamlit as st
 import pandas as pd
 from db import get_db
 
+@st.cache_data(show_spinner=False)
+def generate_pdf_cached(timetables_dict, fac_tt_dict):
+    from engine.pdf_export import create_timetables_pdf
+    return create_timetables_pdf(timetables_dict, fac_tt_dict)
+
+def style_section_cell(v):
+    return "background-color: #e8f5e9; color: black;" if v else "background-color: #f5f5f5; color: black;"
+
+def style_fac_cell(v):
+    return "background-color: #e3f2fd; color: black;" if v else "background-color: #f5f5f5; color: black;"
+
 st.set_page_config(page_title="Generate Timetable", page_icon="🚀", layout="wide")
 
 st.title("🚀 Generate Timetable")
@@ -140,9 +151,7 @@ if timetables:
             grid = timetables[sec]  # 5 rows (days) × 7 cols (slots)
             df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
             st.dataframe(
-                df.style.map(
-                    lambda v: "background-color: #e8f5e9; color: black;" if v else "background-color: #f5f5f5; color: black;"
-                ),
+                df.style.map(style_section_cell),
                 use_container_width=True,
                 height=250,
             )
@@ -159,9 +168,7 @@ if fac_tt:
             grid = fac_tt[fac]
             df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
             st.dataframe(
-                df.style.map(
-                    lambda v: "background-color: #e3f2fd; color: black;" if v else "background-color: #f5f5f5; color: black;"
-                ),
+                df.style.map(style_fac_cell),
                 use_container_width=True,
                 height=250,
             )
@@ -174,8 +181,7 @@ if timetables:
     col_export, col_clear = st.columns(2)
     with col_export:
         try:
-            from engine.pdf_export import create_timetables_pdf
-            pdf_bytes = create_timetables_pdf(timetables, fac_tt)
+            pdf_bytes = generate_pdf_cached(timetables, fac_tt)
             
             st.download_button(
                 label="📄 Export to PDF",
