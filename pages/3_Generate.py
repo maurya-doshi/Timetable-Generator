@@ -145,16 +145,15 @@ if result.get("errors"):
 timetables = result.get("timetables", {})
 if timetables:
     st.subheader("🗓️ Section Timetables")
-    section_tabs = st.tabs(sorted(timetables.keys()))
-    for tab, sec in zip(section_tabs, sorted(timetables.keys())):
-        with tab:
-            grid = timetables[sec]  # 5 rows (days) × 7 cols (slots)
-            df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
-            st.dataframe(
-                df.style.map(style_section_cell),
-                use_container_width=True,
-                height=250,
-            )
+    selected_sec = st.selectbox("Select Section to View", sorted(timetables.keys()))
+    if selected_sec:
+        grid = timetables[selected_sec]  # 5 rows (days) × 7 cols (slots)
+        df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
+        st.dataframe(
+            df.style.map(style_section_cell),
+            use_container_width=True,
+            height=250,
+        )
 
 # -----------------------------------------------------------------------
 # Faculty timetables
@@ -162,16 +161,15 @@ if timetables:
 fac_tt = result.get("faculty_timetables", {})
 if fac_tt:
     st.subheader("👩‍🏫 Faculty Timetables")
-    fac_tabs = st.tabs(sorted(fac_tt.keys()))
-    for tab, fac in zip(fac_tabs, sorted(fac_tt.keys())):
-        with tab:
-            grid = fac_tt[fac]
-            df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
-            st.dataframe(
-                df.style.map(style_fac_cell),
-                use_container_width=True,
-                height=250,
-            )
+    selected_fac = st.selectbox("Select Faculty to View", sorted(fac_tt.keys()))
+    if selected_fac:
+        grid = fac_tt[selected_fac]
+        df = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
+        st.dataframe(
+            df.style.map(style_fac_cell),
+            use_container_width=True,
+            height=250,
+        )
 
 # -----------------------------------------------------------------------
 # Export to PDF
