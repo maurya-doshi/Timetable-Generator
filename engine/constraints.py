@@ -75,8 +75,8 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
                         if dedup in seen_pg_core:
                             continue
                         seen_pg_core.add(dedup)
-                    iv = model.NewOptionalFixedSizeIntervalVar(
-                        t, 2, x1[key],
+                    iv = model.NewOptionalIntervalVar(
+                        t, 2, t + 2, x1[key],
                         f"iv_fac_L_{fac}_{sec}_{cc}_d{d}_t{t}"
                     )
                     intervals_by_fac_day[(fac, d)].append(iv)
@@ -92,16 +92,16 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
                             if dedup in seen_pg_core:
                                 continue
                             seen_pg_core.add(dedup)
-                        iv = model.NewOptionalFixedSizeIntervalVar(
-                            t, 3, x2[key],
+                        iv = model.NewOptionalIntervalVar(
+                            t, 3, t + 3, x2[key],
                             f"iv_fac_{etype}_{fac}_{sec}_{cc}_d{d}_t{t}"
                         )
                         intervals_by_fac_day[(fac, d)].append(iv)
 
     # Co-faculty practical blocks (2-slot) → padded to duration 3
     for (fac_name, sec, cc, d, t_start), var in co_fac.items():
-        iv = model.NewOptionalFixedSizeIntervalVar(
-            t_start, 3, var,
+        iv = model.NewOptionalIntervalVar(
+            t_start, 3, t_start + 3, var,
             f"iv_cofac_{fac_name}_{sec}_{cc}_d{d}_t{t_start}"
         )
         intervals_by_fac_day[(fac_name, d)].append(iv)
@@ -201,7 +201,7 @@ def add_no_section_clash(model, x1, x2, section_courses):
     """
     For each section, for each day: no two courses may occupy the same time slot.
 
-    Uses NewOptionalFixedSizeIntervalVar + AddNoOverlap — one constraint per
+    Uses NewOptionalIntervalVar + AddNoOverlap — one constraint per
     (section, day) instead of one sum() <= 1 per (section, day, slot).
 
     section_courses: dict  section -> list of course_codes
@@ -215,8 +215,8 @@ def add_no_section_clash(model, x1, x2, section_courses):
                 for t in range(NUM_SLOTS):
                     key = (sec, cc, d, t)
                     if key in x1:
-                        iv = model.NewOptionalFixedSizeIntervalVar(
-                            t, 1, x1[key],
+                        iv = model.NewOptionalIntervalVar(
+                            t, 1, t + 1, x1[key],
                             f"iv_sec_L_{sec}_{cc}_d{d}_t{t}"
                         )
                         intervals_by_sec_day[(sec, d)].append(iv)
@@ -226,8 +226,8 @@ def add_no_section_clash(model, x1, x2, section_courses):
                     for etype in ("T", "P"):
                         key = (sec, cc, etype, d, t)
                         if key in x2:
-                            iv = model.NewOptionalFixedSizeIntervalVar(
-                                t, 2, x2[key],
+                            iv = model.NewOptionalIntervalVar(
+                                t, 2, t + 2, x2[key],
                                 f"iv_sec_{etype}_{sec}_{cc}_d{d}_t{t}"
                             )
                             intervals_by_sec_day[(sec, d)].append(iv)
@@ -711,8 +711,8 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
             room_var = lab_room.get((sec, cc, etype, d, t, room))
             if room_var is None:
                 continue
-            iv = model.NewOptionalFixedSizeIntervalVar(
-                t, duration, room_var,
+            iv = model.NewOptionalIntervalVar(
+                t, duration, t + duration, room_var,
                 f"iv_room_{room}_{sec}_{cc}_{etype}_d{d}_t{t}"
             )
             room_intervals[(room, d)].append(iv)
