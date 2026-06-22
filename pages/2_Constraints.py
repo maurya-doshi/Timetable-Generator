@@ -75,14 +75,14 @@ with ug_tab:
     with col1:
         st.info("**Open Electives (OE)**\n\n*(Scheduled concurrently on **Monday, Tuesday, Wednesday, 5th Slot** for 5th/6th/7th Sem)*")
         if computed_oe_display:
-            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_oe_display}), width='stretch', hide_index=True)
+            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_oe_display}), use_container_width=True, hide_index=True)
         else:
             st.write("None detected")
 
     with col2:
         st.info("**Ability Enhancement Course (AEC)**\n\n*(Scheduled at the **same time** for all 3rd & 4th Sem sections)*")
         if computed_aec_display:
-            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_aec_display}), width='stretch', hide_index=True)
+            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_aec_display}), use_container_width=True, hide_index=True)
         else:
             st.write("None detected")
 
@@ -172,7 +172,7 @@ edited_maths_df = st.data_editor(
         "Slot": st.column_config.SelectboxColumn("Slot", options=slots, required=True),
         "Faculty": st.column_config.TextColumn("Faculty Name (Optional)", default="Maths Faculty")
     },
-    width='stretch'
+    use_container_width=True
 )
 
 st.divider()
@@ -215,7 +215,7 @@ edited_lab_df = st.data_editor(
         "Day": st.column_config.SelectboxColumn("Day", options=lab_days, required=True),
         "Slot": st.column_config.SelectboxColumn("Slot", options=lab_slots, required=True),
     },
-    width='stretch',
+    use_container_width=True,
     key="lab_alloc_editor"
 )
 
