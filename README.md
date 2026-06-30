@@ -10,43 +10,62 @@ app_file: app.py
 pinned: false
 ---
 
-# 🗓️ Automated Timetable Generator
+# 📅 Timetable Generator
 
-[![Streamlit Demo](https://img.shields.io/badge/Demo-Streamlit-brightgreen)](https://timetable-generator-1-u6sa.onrender.com)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Streamlit](https://img.shields.io/badge/Built%20with-Streamlit-FF4B4B.svg)](https://streamlit.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A robust, AI-powered timetable generator designed for academic institutions. Built with **Streamlit** for the frontend and Google's **OR-Tools (CP-SAT)** for the backend, this application optimizes complex constraints to automatically schedule lectures, tutorials, and practical labs without clashes.
-
-🚀 **Live Demo:** [https://timetable-generator-1-u6sa.onrender.com](https://timetable-generator-1-u6sa.onrender.com)
+A constraint-based timetable generator for academic institutions. Upload faculty & course data, configure scheduling rules, and let the **Google OR-Tools CP-SAT** solver build a clash-free timetable automatically. Export section and faculty timetables to PDF in one click.
 
 ---
 
 ## ✨ Features
 
-- **Mathematical Optimization:** Uses Constraint Programming (CP-SAT) to mathematically prove the best possible schedule.
-- **Dynamic Constraints:** 
-  - Teacher workload caps & availability.
-  - Room allocation & double-booking prevention.
-  - Contiguous multi-slot assignments for labs and tutorials.
-- **Smart Penalty System:** Soft constraints actively minimize "bad" schedule behaviors (like repeating a subject in the first slot every day or spreading out a teacher's schedule too thinly).
-- **Export to PDF:** Generates clean, formatted PDF timetables for sections and faculty using ReportLab.
-- **Cloud Database:** Connects to MongoDB Atlas to persist generated timetables remotely.
+- **CP-SAT Constraint Solver:** 10 hard constraints (no double-booking, mandatory weekly hours, lab contiguity, maths/lab slot locks, OE/AEC concurrency, PG shared classes, etc.) + 3 soft constraints (subject spread, morning-first preference, first-slot penalty).
+- **3-Page Streamlit App:**
+  - **Input Data** — Upload a single `.xlsx` file containing two sheets (`Faculty_Assignments` & `Courses`) for Odd or Even semester.
+  - **Constraints** — Interactively configure Open Electives, AEC subjects, shared PG classes, manual maths slot overrides, and CSE lab allocations.
+  - **Generate** — Run the solver with a configurable time limit, view per-section and per-faculty timetables, and export a formatted PDF.
+- **Smart Excel Parser:** Handles the two-row header format for faculty sheets and round-robin section distribution when semester columns specify a whole semester rather than individual sections.
+- **PDF Export:** Clean, formatted timetables for every section and faculty member via ReportLab.
+- **Cloud Persistence:** MongoDB Atlas (PyMongo) stores faculty, courses, constraints, and generated timetables.
 
 ## 🛠️ Technology Stack
 
-- **Frontend:** [Streamlit](https://streamlit.io/)
-- **Solver Engine:** [Google OR-Tools](https://developers.google.com/optimization/cp/cp_solver) (Constraint Programming)
-- **Database:** [MongoDB](https://www.mongodb.com/) (PyMongo)
-- **PDF Generation:** [ReportLab](https://pypi.org/project/reportlab/)
-- **Data Handling:** [Pandas](https://pandas.pydata.org/) & [OpenPyXL](https://openpyxl.readthedocs.io/)
+| Layer | Technology |
+|---|---|
+| **UI** | [Streamlit](https://streamlit.io/) |
+| **Solver** | [Google OR-Tools](https://developers.google.com/optimization/cp/cp_solver) (CP-SAT) |
+| **Database** | [MongoDB Atlas](https://www.mongodb.com/) + PyMongo |
+| **PDF Export** | [ReportLab](https://pypi.org/project/reportlab/) |
+| **Excel Parsing** | [OpenPyXL](https://openpyxl.readthedocs.io/) |
+| **Data** | [Pandas](https://pandas.pydata.org/) |
+
+## 📁 Project Structure
+
+```
+Timetable-Generator/
+├── app.py                   # Streamlit entry point & landing page
+├── pages/
+│   ├── 1_Input_Data.py      # Dual-sheet Excel parser & MongoDB uploader
+│   ├── 2_Constraints.py     # OE, AEC, PG, maths & lab allocation builder
+│   └── 3_Generate.py        # Run solver, view results & export PDF
+├── engine/
+│   ├── solver.py            # OR-Tools CP-SAT model builder
+│   ├── constraints.py       # Constraint definitions (H1–H10, S1–S3)
+│   └── pdf_export.py        # ReportLab PDF generation
+├── db.py                    # PyMongo connection & helpers
+├── config.py                # App settings & DB URI
+└── requirements.txt         # Python dependencies
+```
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 
 - Python 3.10 or higher
-- A MongoDB cluster (local or Atlas)
+- A MongoDB cluster (local or [Atlas free tier](https://www.mongodb.com/atlas))
 
 ### Installation
 
@@ -56,10 +75,13 @@ A robust, AI-powered timetable generator designed for academic institutions. Bui
    cd Timetable-Generator
    ```
 
-2. **Set up a virtual environment (optional but recommended):**
+2. **Set up a virtual environment (recommended):**
    ```bash
    python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   # Windows:
+   .venv\Scripts\activate
+   # macOS / Linux:
+   source .venv/bin/activate
    ```
 
 3. **Install dependencies:**
@@ -67,22 +89,43 @@ A robust, AI-powered timetable generator designed for academic institutions. Bui
    pip install -r requirements.txt
    ```
 
-4. **Environment Variables:**
-   Create a `.env` file in the root directory and add your MongoDB connection string (optional, defaults to local):
+4. **Configure environment variables:**
+   Create a `.env` file in the root directory:
    ```env
-   MONGO_URI=mongodb+srv://<username>:<password>@cluster0...
+   MONGO_URI=mongodb+srv://<username>:<password>@cluster0.example.mongodb.net/
    DB_NAME=timetable_generator
    ```
 
-### Usage
+### Running the App
 
-1. Run the Streamlit application:
-   ```bash
-   streamlit run app.py
-   ```
-2. Open your browser to `http://localhost:8501`.
-3. Upload your section, faculty, and room data (via the Excel templates provided in the app).
-4. Click **Generate Timetable** and let the CP-SAT engine build your schedule!
+```bash
+streamlit run app.py
+```
+
+Open `http://localhost:8501` in your browser, then follow the three-step workflow:
+
+1. **Input Data** — Upload your `.xlsx` file (must contain `Faculty_Assignments` and `Courses` sheets) and save to the database.
+2. **Constraints** — Tag Open Elective, AEC, and PG subjects; set maths slot locks and lab allocations.
+3. **Generate** — Set a solver time limit, click **Generate Timetable**, and download the PDF.
+
+### Excel File Format
+
+The app expects a **single `.xlsx` file** with two sheets:
+
+**`Faculty_Assignments`** — Two-row header format:
+
+| Sr No. | Name | Designation | Subject | | Lab | |
+|--------|------|-------------|---------|---|-----|---|
+| | | | S1 | Sem S1 | L1 | Sem L1 |
+| 1 | Dr. Smith | Assistant Prof | CS301 | 3A | CS391 | 3A |
+
+> In `Sem` columns, enter a specific section (`3A`) or a whole semester number (`3`) to auto-distribute across all sections round-robin.
+
+**`Courses`** — Single-row header format:
+
+| Course Code | Course Name | L | T | P | Lecture in Lab? | Tutorial in Lab? | Semester | Elective |
+|-------------|-------------|---|---|---|-----------------|------------------|----------|----------|
+| 24CS32 | Digital Design | 3 | 0 | 1 | No | No | 3 | No |
 
 ## 🤝 Contributing
 
