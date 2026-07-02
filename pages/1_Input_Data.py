@@ -258,6 +258,47 @@ if uploaded_file is not None:
     st.success(f"✅ Parsed **{len(courses_records)} course(s)** from Courses.")
 
     # -----------------------------------------------------------------------
+    # 4. Cross-validate: faculty subject/lab codes vs course codes (#15)
+    # -----------------------------------------------------------------------
+    valid_codes = {r["course_code"] for r in courses_records}
+    unknown_assignments = []
+    for rec in faculty_records:
+        fac_name = rec["name"]
+        for subj in rec.get("subjects", []):
+            code = subj.get("code", "")
+            if code and code not in valid_codes:
+                unknown_assignments.append({
+                    "Faculty": fac_name,
+                    "Type": "Subject",
+                    "Code": code,
+                    "Semester": subj.get("semester", ""),
+                })
+        for lab in rec.get("labs", []):
+            code = lab.get("code", "")
+            if code and code not in valid_codes:
+                unknown_assignments.append({
+                    "Faculty": fac_name,
+                    "Type": "Lab",
+                    "Code": code,
+                    "Semester": lab.get("semester", ""),
+                })
+
+    if unknown_assignments:
+        import pandas as _pd
+        with st.expander(
+            f"⚠️ {len(unknown_assignments)} unrecognised course code(s) found in Faculty_Assignments — click to review",
+            expanded=True,
+        ):
+            st.warning(
+                "The following codes appear in the **Faculty_Assignments** sheet but are "
+                "**not present** in the **Courses** sheet. This may be a typo or a missing "
+                "course entry. The solver will ignore assignments to unknown codes."
+            )
+            st.dataframe(_pd.DataFrame(unknown_assignments), use_container_width=True, hide_index=True)
+    else:
+        st.success("✅ **Cross-validation:** All faculty course codes match the Courses sheet.")
+
+    # -----------------------------------------------------------------------
     # Display Faculty Assignments separately
     # -----------------------------------------------------------------------
     st.header("📚 Faculty Assignments")
