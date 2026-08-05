@@ -75,14 +75,14 @@ with ug_tab:
     with col1:
         st.info("**Open Electives (OE)**\n\n*(Scheduled concurrently on **Monday, Tuesday, Wednesday, 5th Slot** for 5th/6th/7th Sem)*")
         if computed_oe_display:
-            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_oe_display}), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_oe_display}), hide_index=True)
         else:
             st.write("None detected")
 
     with col2:
         st.info("**Ability Enhancement Course (AEC)**\n\n*(Scheduled at the **same time** for all 3rd & 4th Sem sections)*")
         if computed_aec_display:
-            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_aec_display}), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_aec_display}), hide_index=True)
         else:
             st.write("None detected")
 
@@ -183,7 +183,8 @@ edited_maths_df = st.data_editor(
 
         "Faculty": st.column_config.TextColumn("Faculty Name (Optional)", default="Maths Faculty")
     },
-    use_container_width=True
+    use_container_width=True,
+    key="maths_slots_editor"
 )
 
 st.divider()
@@ -216,10 +217,6 @@ lab_slots = [
 
 # Load existing lab allocations if any; start with a single empty row as example
 default_lab_alloc = current_config.get("cse_lab_allocations", [])
-if not default_lab_alloc:
-    # Provide one empty row as a template (like Maths table)
-    default_lab_alloc = [{"Class": None, "Lab Room": None, "Day": None, "Slot": None}]
-
 
 # Ensure all existing classes in saved lab_alloc are in options
 for r in default_lab_alloc:
@@ -227,7 +224,7 @@ for r in default_lab_alloc:
     if c and c not in first_second_sections:
         first_second_sections.append(c)
 
-df_lab = pd.DataFrame(default_lab_alloc)
+df_lab = pd.DataFrame(default_lab_alloc, columns=["Class", "Lab Room", "Day", "Slot"])
 
 edited_lab_df = st.data_editor(
     df_lab,
