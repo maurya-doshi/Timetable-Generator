@@ -202,7 +202,8 @@ lab_slots = [
 default_lab_alloc = current_config.get("cse_lab_allocations", [])
 if not default_lab_alloc:
     # Provide one empty row as a template (like Maths table)
-    default_lab_alloc = [{"Class": "", "Lab Room": "", "Day": "", "Slot": ""}]
+    default_lab_alloc = [{"Class": None, "Lab Room": None, "Day": None, "Slot": None}]
+
 
 df_lab = pd.DataFrame(default_lab_alloc)
 
