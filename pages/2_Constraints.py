@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from db import get_db
+from db import get_db, get_section_map
 
 st.set_page_config(page_title="Constraints Builder", page_icon="⚙️", layout="wide")
 
@@ -128,9 +128,13 @@ Use the grid below to **lock exactly when and where Maths happens**.
 Add a row for each Maths slot needed across your classes.
 """)
 
-all_classes = [
-    "3A", "3B", "3C", "3D", "4A", "4B", "4C", "4D"
-]
+section_map = get_section_map()
+all_classes = []
+for sems in section_map.values():
+    all_classes.extend(sems)
+if not all_classes:
+    all_classes = ["3A", "3B", "3C", "3D", "4A", "4B", "4C", "4D"]
+
 days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 slots = [
     "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)", 
@@ -162,14 +166,21 @@ if not default_maths:
         {"Class": "3D", "Day": "Friday", "Slot": "S1 (9:00 - 9:55)", "Faculty": "MATHS"},
     ]
 
+# Ensure all existing classes in saved maths_slots are in options
+for m in default_maths:
+    c = m.get("Class")
+    if c and c not in all_classes:
+        all_classes.append(c)
+
 df_maths = pd.DataFrame(default_maths)
 edited_maths_df = st.data_editor(
     df_maths,
     num_rows="dynamic",
     column_config={
-        "Class": st.column_config.SelectboxColumn("Class Section", options=all_classes, required=True),
-        "Day": st.column_config.SelectboxColumn("Day", options=days, required=True),
-        "Slot": st.column_config.SelectboxColumn("Slot", options=slots, required=True),
+        "Class": st.column_config.SelectboxColumn("Class Section", options=all_classes),
+        "Day": st.column_config.SelectboxColumn("Day", options=days),
+        "Slot": st.column_config.SelectboxColumn("Slot", options=slots),
+
         "Faculty": st.column_config.TextColumn("Faculty Name (Optional)", default="Maths Faculty")
     },
     use_container_width=True
@@ -189,7 +200,12 @@ Add a row for each required lab session.
 
 # Define available lab rooms and sections
 lab_rooms = ["CSE Lab 1", "CSE Lab 2", "CSE Lab 3", "CSE Lab 4"]
-first_second_sections = ["1A", "1B", "1C", "1K", "2A", "2B", "2C", "2K"]
+first_second_sections = []
+for sem in ["1", "2"]:
+    if sem in section_map:
+        first_second_sections.extend(section_map[sem])
+if not first_second_sections:
+    first_second_sections = ["1A", "1B", "1C", "1K", "2A", "2B", "2C", "2K"]
 
 # Lab allocation uses Saturday too (1st/2nd sem labs can fall on Saturday)
 lab_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
@@ -205,16 +221,22 @@ if not default_lab_alloc:
     default_lab_alloc = [{"Class": None, "Lab Room": None, "Day": None, "Slot": None}]
 
 
+# Ensure all existing classes in saved lab_alloc are in options
+for r in default_lab_alloc:
+    c = r.get("Class")
+    if c and c not in first_second_sections:
+        first_second_sections.append(c)
+
 df_lab = pd.DataFrame(default_lab_alloc)
 
 edited_lab_df = st.data_editor(
     df_lab,
     num_rows="dynamic",   # allow adding/removing rows
     column_config={
-        "Class": st.column_config.SelectboxColumn("Class Section", options=first_second_sections, required=True),
-        "Lab Room": st.column_config.SelectboxColumn("Lab Room", options=lab_rooms, required=True),
-        "Day": st.column_config.SelectboxColumn("Day", options=lab_days, required=True),
-        "Slot": st.column_config.SelectboxColumn("Slot", options=lab_slots, required=True),
+        "Class": st.column_config.SelectboxColumn("Class Section", options=first_second_sections),
+        "Lab Room": st.column_config.SelectboxColumn("Lab Room", options=lab_rooms),
+        "Day": st.column_config.SelectboxColumn("Day", options=lab_days),
+        "Slot": st.column_config.SelectboxColumn("Slot", options=lab_slots),
     },
     use_container_width=True,
     key="lab_alloc_editor"
