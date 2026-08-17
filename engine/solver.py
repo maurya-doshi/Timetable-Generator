@@ -350,6 +350,53 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     oe_codes  = group_parallel_electives(oe_codes,  "OE")
     aec_codes = group_parallel_electives(aec_codes, "AEC")
 
+    # --- Institutional OE cleanup ---
+    # If the same faculty was assigned to an OE pseudo-code for ALL sections of a
+    # semester simultaneously (e.g. via semester='7' mapping to 7A+7B+7C), the OE
+    # concurrency constraint would force all those sections to the same slot — making
+    # it physically impossible for that faculty to teach all sections at once (clash).
+    #
+    # For "institutional OEs" students go to OTHER departments and OTHER department
+    # faculty teach them. CSE faculty go OUT to teach other dept students.
+    # In this case: remove the faculty's assignments to the OE sections entirely.
+    # The OE slot is still scheduled concurrently for all sections (labelled "OE"),
+    # just with no named CSE faculty. Faculty blocking for outgoing OE assignments
+    # should be handled separately via PLC entries.
+    # Collect ALL elective course codes (both pseudo-grouped and standalone)
+    all_elective_codes = set(oe_codes)
+    for code, info in course_info.items():
+        if str(info.get("elective", "No")).lower() in ("yes", "y", "true"):
+            all_elective_codes.add(code)
+
+    lookup = section_map if section_map else _SEMESTER_SECTIONS
+    for fac in list(faculty_assignments.keys()):
+        # Build map of {elective_code: [sections this faculty is assigned to]}
+        elec_sec_map: dict[str, list[str]] = {}
+        for (sec, cc) in faculty_assignments[fac]:
+            if cc in all_elective_codes:
+                elec_sec_map.setdefault(cc, []).append(sec)
+
+        # Detect institutional OE: faculty assigned to >1 section for the same elective
+        # and those sections form a complete (or near-complete) semester group
+        institutional_codes: set[str] = set()
+        for elec_cc, secs in elec_sec_map.items():
+            if len(secs) <= 1:
+                continue  # single section is fine
+            # Infer semester from the sections themselves
+            sems = set(s[0] for s in secs if s and s[0].isdigit())
+            for sem in sems:
+                expected_secs = lookup.get(sem, [])
+                secs_this_sem = [s for s in secs if s.startswith(sem)]
+                # Institutional if faculty teaches majority of sections for that semester
+                if len(secs_this_sem) >= max(2, len(expected_secs) - 1):
+                    institutional_codes.add(elec_cc)
+
+        if institutional_codes:
+            faculty_assignments[fac] = [
+                (s, c) for (s, c) in faculty_assignments[fac]
+                if c not in institutional_codes
+            ]
+
     pg_core_name = constraints_doc.get("pg_shared_core")
     pg_core_code = name_to_code.get(pg_core_name, pg_core_name) if pg_core_name else None
 

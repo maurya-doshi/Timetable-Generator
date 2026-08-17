@@ -302,6 +302,9 @@ def add_no_student_gaps(model, section_courses, slot_coverage_sec):
     LUNCH_BOUNDARY = 3
 
     for sec in section_courses:
+        # 1st sem sections only exist for faculty blocking — no class timetable
+        if sec.startswith("1"):
+            continue
         for d in range(NUM_DAYS):
             # active[t] is a BoolVar if the slot has coverage vars, else None.
             # None means the slot is provably always empty — no aux var is created
@@ -344,10 +347,12 @@ def add_morning_first(model, section_courses, slot_coverage_sec):
     slot_coverage_sec: precomputed dict (sec, d, t) -> list of BoolVars covering slot t.
     """
     for sec in section_courses:
-        # PG sections and 7th semester have fewer total course-hours than standard UG
-        # and cannot reliably fill all 4 morning slots every day — exempt them.
-        if "PG" in sec or "SP" in sec or sec.startswith("7"):
-            continue  # EXEMPT PG and 7th sem from mandatory morning fill
+        # PG sections, 7th semester, and 1st semester are exempt:
+        #   - PG/SP: fewer course hours than standard UG
+        #   - 7th sem: 15 hrs/week is enough (user confirmed)
+        #   - 1st sem: only used for faculty blocking; no class timetable generated
+        if "PG" in sec or "SP" in sec or sec.startswith("7") or sec.startswith("1"):
+            continue  # EXEMPT from mandatory morning fill
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d == 4:
                 continue  # EXEMPT 7th sem from Friday classes
@@ -370,6 +375,9 @@ def add_no_empty_days(model, section_courses, event_vars_sec):
                     (each x1/x2 variable counted once — no double-counting for 2-slot blocks).
     """
     for sec in section_courses:
+        # 1st sem sections only exist for faculty blocking — skip empty-day checks
+        if sec.startswith("1"):
+            continue
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d == 4:
                 continue  # EXEMPT 7th sem from Friday classes
