@@ -344,10 +344,10 @@ def add_morning_first(model, section_courses, slot_coverage_sec):
     slot_coverage_sec: precomputed dict (sec, d, t) -> list of BoolVars covering slot t.
     """
     for sec in section_courses:
-        # PG sections have fewer total course-hours than UG sections and
-        # cannot reliably fill all 4 morning slots every day — exempt them.
-        if "PG" in sec or "SP" in sec:
-            continue  # EXEMPT PG sections from mandatory morning fill
+        # PG sections and 7th semester have fewer total course-hours than standard UG
+        # and cannot reliably fill all 4 morning slots every day — exempt them.
+        if "PG" in sec or "SP" in sec or sec.startswith("7"):
+            continue  # EXEMPT PG and 7th sem from mandatory morning fill
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d == 4:
                 continue  # EXEMPT 7th sem from Friday classes
