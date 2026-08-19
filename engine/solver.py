@@ -41,6 +41,7 @@ from engine.constraints import (
     add_friday_half_day,
     add_morning_first,
     add_no_empty_days,
+    add_first_sem_blocking,
 )
 
 
@@ -405,6 +406,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
                    and str(info.get("ug_pg", "UG")).upper() == "PG"]
 
     lab_alloc = constraints_doc.get("cse_lab_allocations", [])
+    first_sem_blocking = constraints_doc.get("first_sem_blocking", [])
 
     sections_3rd = [s for s in section_courses if s.startswith("3")]
     sections_4th = [s for s in section_courses if s.startswith("4")]
@@ -420,6 +422,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
         "pg_pe_codes":        pg_pe_codes,
         "maths_slots":        maths_slots,
         "lab_alloc":          lab_alloc,
+        "first_sem_blocking": first_sem_blocking,
         "sections_3rd":       sections_3rd,
         "sections_4th":       sections_4th,
         "pg_sections":        pg_sections,
@@ -859,6 +862,9 @@ def build_and_solve(
 
     if "maths" not in skip and mappings["maths_slots"]:
         add_maths_locks(model, x1, x2, mappings["maths_slots"])
+
+    if "first_sem_blocking" not in skip and mappings["first_sem_blocking"]:
+        add_first_sem_blocking(model, x1, x2, mappings["first_sem_blocking"])
 
     # ---- Soft objective ----
     penalties = []

@@ -347,15 +347,14 @@ def add_morning_first(model, section_courses, slot_coverage_sec):
     slot_coverage_sec: precomputed dict (sec, d, t) -> list of BoolVars covering slot t.
     """
     for sec in section_courses:
-        # PG sections, 7th semester, and 1st semester are exempt:
+        # PG sections and 1st semester are exempt:
         #   - PG/SP: fewer course hours than standard UG
-        #   - 7th sem: 15 hrs/week is enough (user confirmed)
         #   - 1st sem: only used for faculty blocking; no class timetable generated
-        if "PG" in sec or "SP" in sec or sec.startswith("7") or sec.startswith("1"):
+        if "PG" in sec or "SP" in sec or sec.startswith("1"):
             continue  # EXEMPT from mandatory morning fill
         for d in range(NUM_DAYS):
-            if sec.startswith("7") and d == 4:
-                continue  # EXEMPT 7th sem from Friday classes
+            if sec.startswith("7") and d >= 3:
+                continue  # EXEMPT 7th sem from Thursday and Friday classes
             for t in MORNING_SLOTS:  # [0, 1, 2, 3]
                 terms = slot_coverage_sec.get((sec, d, t), [])
                 if terms:
@@ -379,8 +378,8 @@ def add_no_empty_days(model, section_courses, event_vars_sec):
         if sec.startswith("1"):
             continue
         for d in range(NUM_DAYS):
-            if sec.startswith("7") and d == 4:
-                continue  # EXEMPT 7th sem from Friday classes
+            if sec.startswith("7") and d >= 3:
+                continue  # EXEMPT 7th sem from Thursday/Friday classes
             terms = event_vars_sec.get((sec, d), [])
             if terms:
                 model.Add(sum(terms) >= 1)
@@ -571,6 +570,38 @@ def add_maths_locks(model, x1, x2, maths_slots, maths_course_code="MATHS"):
             key1 = (sec, maths_course_code, d, t)
             if key1 in x1:
                 model.Add(x1[key1] == 1)
+
+
+# ===================================================================
+# H10.5 — 1st Sem Class Blocking
+# ===================================================================
+def add_first_sem_blocking(model, x1, x2, first_sem_blocking):
+    """
+    Lock pre-assigned 1st semester subjects to specific slots.
+    first_sem_blocking: list of {"Class": "1A", "Course Code": "26...", "Day": "Monday", "Slot": "S1 (...)"}
+    """
+    for entry in first_sem_blocking:
+        sec = entry.get("Class", "")
+        cc = entry.get("Course Code", "")
+        day_label = entry.get("Day", "")
+        slot_label = entry.get("Slot", "")
+        if not sec or not cc or not day_label or not slot_label:
+            continue
+        d = DAY_LABEL_TO_IDX.get(day_label)
+        t = SLOT_LABEL_TO_IDX.get(slot_label)
+        if d is None or t is None:
+            continue
+            
+        # 1-slot lecture
+        key1 = (sec, cc, d, t)
+        if key1 in x1:
+            model.Add(x1[key1] == 1)
+            
+        # 2-slot practical/tutorial (x2 is keyed by the start slot)
+        for etype in ["T", "P"]:
+            key2 = (sec, cc, etype, d, t)
+            if key2 in x2:
+                model.Add(x2[key2] == 1)
 
 
 # ===================================================================
@@ -778,19 +809,21 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
 def add_friday_half_day(model, x1, x2, section_courses, course_day_events):
     """
     Friday (Day 4) slots S5, S6, S7 (Slots 4, 5, 6) must be completely empty.
-    For 7th Semester sections, the ENTIRE Friday is empty.
+    For 7th Semester sections, the ENTIRE Thursday (Day 3) and Friday are empty.
 
     course_day_events: precomputed (sec, cc, d) → list of event BoolVars.
-    Used to zero all Friday events for 7th sem in one fast pass.
+    Used to zero all Thursday/Friday events for 7th sem in one fast pass.
     """
+    DAY_THU = 3
     DAY_FRI = 4
     for sec, courses in section_courses.items():
         is_7th_sem = sec.startswith("7")
         for cc in courses:
             if is_7th_sem:
-                # Zero ALL Friday events via precomputed lookup — no inner slot loops
-                for var in course_day_events.get((sec, cc, DAY_FRI), []):
-                    model.Add(var == 0)
+                # Zero ALL Thursday and Friday events via precomputed lookup
+                for d in [DAY_THU, DAY_FRI]:
+                    for var in course_day_events.get((sec, cc, d), []):
+                        model.Add(var == 0)
             else:
                 # Zero Friday afternoon lecture slots
                 for t in AFTERNOON_SLOTS:

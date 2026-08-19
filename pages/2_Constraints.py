@@ -241,6 +241,42 @@ edited_lab_df = st.data_editor(
 
 st.divider()
 
+# =====================================================================
+# NEW: 1st Sem Class Blocking
+# =====================================================================
+st.header("4. 1st Sem Class Blocking")
+st.markdown("""
+Since 1st semester timetables are not generated but their classes block faculty slots, use this table to specify exactly when each 1st semester subject happens.
+""")
+
+first_sem_sections = [s for s in section_map.get("1", [])] if "1" in section_map else ["1A", "1B", "1C", "1K"]
+all_course_codes = [c.get("course_code") for c in courses if c.get("course_code")]
+
+default_first_sem = current_config.get("first_sem_blocking", [])
+
+# Ensure saved sections are in options
+for r in default_first_sem:
+    c = r.get("Class")
+    if c and c not in first_sem_sections:
+        first_sem_sections.append(c)
+
+df_first_sem = pd.DataFrame(default_first_sem, columns=["Class", "Course Code", "Day", "Slot"])
+
+edited_first_sem_df = st.data_editor(
+    df_first_sem,
+    num_rows="dynamic",
+    column_config={
+        "Class": st.column_config.SelectboxColumn("Class Section", options=first_sem_sections),
+        "Course Code": st.column_config.SelectboxColumn("Course Code", options=all_course_codes),
+        "Day": st.column_config.SelectboxColumn("Day", options=lab_days),
+        "Slot": st.column_config.SelectboxColumn("Slot", options=lab_slots),
+    },
+    use_container_width=True,
+    key="first_sem_blocking_editor"
+)
+
+st.divider()
+
 # ----------------------------------------------------------------------
 # Save all constraints
 # ----------------------------------------------------------------------
@@ -248,6 +284,7 @@ if st.button("💾 Save Constraints", type="primary"):
     # Convert dataframes to list of dicts
     math_slots_list = edited_maths_df.to_dict(orient="records")
     lab_alloc_list = edited_lab_df.to_dict(orient="records")
+    first_sem_blocking_list = edited_first_sem_df.to_dict(orient="records")
     
     doc = {
         "type": "special_subjects",
@@ -255,7 +292,8 @@ if st.button("💾 Save Constraints", type="primary"):
         "aec": selected_aec,
         "pg_shared_core": shared_core if shared_core != "None" else None,
         "maths_slots": math_slots_list,
-        "cse_lab_allocations": lab_alloc_list
+        "cse_lab_allocations": lab_alloc_list,
+        "first_sem_blocking": first_sem_blocking_list
     }
     
     try:

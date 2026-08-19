@@ -33,6 +33,7 @@ temp_*.txt
 
 # Generated outputs
 *.pdf
+*.xlsx
 
 # Streamlit cache
 .streamlit/
