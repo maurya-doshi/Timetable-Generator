@@ -8,13 +8,15 @@ st.title("⚙️ Constraints Builder")
 st.markdown("Configure special scheduling rules and tag specific subjects to trigger hardcoded constraints.")
 
 # Connect to database
-db = get_db()
-
 try:
-    db.client.admin.command('ping')
+    db = get_db()
     courses_cursor = db["courses"].find({}, {"_id": 0})
     courses = list(courses_cursor)
-except Exception:
+    db_ok = True
+except Exception as e:
+    db = None
+    db_ok = False
+    st.warning(f"⚠️ Could not connect to database ({e}). Default fallback values are enabled.")
     courses = [
         {"course_code": "CS301", "course_name": "Data Structures"},
         {"course_code": "CS304", "course_name": "AEC - EVS"},
@@ -34,11 +36,13 @@ if not course_names:
 
 # --- Fetch existing configuration ---
 current_config = {}
-try:
-    constraints_col = db["constraints"]
-    current_config = constraints_col.find_one({"type": "special_subjects"}) or {}
-except Exception:
-    pass
+if db_ok and db is not None:
+    try:
+        constraints_col = db["constraints"]
+        current_config = constraints_col.find_one({"type": "special_subjects"}) or {}
+    except Exception:
+        pass
+
 
 # --- Fetch existing configuration for PG ---
 default_pg_core = current_config.get("pg_shared_core", "None")
@@ -277,6 +281,42 @@ edited_first_sem_df = st.data_editor(
 
 st.divider()
 
+# =====================================================================
+# NEW: Preferred Lab Room Allocations (Soft Constraint)
+# =====================================================================
+st.header("5. Preferred Lab Room Allocations (Soft Constraint)")
+st.markdown("""
+Specify preferred CSE Lab rooms for specific subjects/keywords. The solver will strongly prefer placing these subjects in their designated labs, but allows spillover if room clashes occur.
+""")
+
+default_subject_lab_prefs = current_config.get("subject_lab_preferences", [
+    {"Keyword": "OOP", "Preferred Lab": "CSE Lab 1"},
+    {"Keyword": "DS", "Preferred Lab": "CSE Lab 1"},
+    {"Keyword": "DDCO", "Preferred Lab": "CSE Lab 2"},
+    {"Keyword": "DCN", "Preferred Lab": "CSE Lab 2"},
+    {"Keyword": "Microservice", "Preferred Lab": "CSE Lab 3"},
+    {"Keyword": "Full Stack", "Preferred Lab": "CSE Lab 3"},
+    {"Keyword": "CD", "Preferred Lab": "CSE Lab 3"},
+    {"Keyword": "AIML", "Preferred Lab": "CSE Lab 4"},
+    {"Keyword": "Skill", "Preferred Lab": "CSE Lab 4"},
+    {"Keyword": "MAP", "Preferred Lab": "CSE Lab 4"},
+])
+
+df_subject_lab = pd.DataFrame(default_subject_lab_prefs, columns=["Keyword", "Preferred Lab"])
+
+edited_subject_lab_df = st.data_editor(
+    df_subject_lab,
+    num_rows="dynamic",
+    column_config={
+        "Keyword": st.column_config.TextColumn("Course Code / Subject Keyword", help="e.g. OOP, DS, DDCO, AIML"),
+        "Preferred Lab": st.column_config.SelectboxColumn("Preferred Lab Room", options=lab_rooms),
+    },
+    use_container_width=True,
+    key="subject_lab_prefs_editor"
+)
+
+st.divider()
+
 # ----------------------------------------------------------------------
 # Save all constraints
 # ----------------------------------------------------------------------
@@ -285,6 +325,7 @@ if st.button("💾 Save Constraints", type="primary"):
     math_slots_list = edited_maths_df.to_dict(orient="records")
     lab_alloc_list = edited_lab_df.to_dict(orient="records")
     first_sem_blocking_list = edited_first_sem_df.to_dict(orient="records")
+    subject_lab_prefs_list = edited_subject_lab_df.to_dict(orient="records")
     
     doc = {
         "type": "special_subjects",
@@ -293,7 +334,8 @@ if st.button("💾 Save Constraints", type="primary"):
         "pg_shared_core": shared_core if shared_core != "None" else None,
         "maths_slots": math_slots_list,
         "cse_lab_allocations": lab_alloc_list,
-        "first_sem_blocking": first_sem_blocking_list
+        "first_sem_blocking": first_sem_blocking_list,
+        "subject_lab_preferences": subject_lab_prefs_list,
     }
     
     try:
@@ -313,4 +355,4 @@ if st.button("🗑️ Delete Constraints"):
             st.info("No saved constraints to delete.")
         st.rerun()
     except Exception as e:
-        st.error(f"❌ Failed to delete: {e}")
+        st.error(f"❌ Failed to delete: {e}")

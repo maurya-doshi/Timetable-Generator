@@ -116,6 +116,14 @@ the solver prefers to assign a faculty member who already teaches that course to
 If a faculty is assigned as co-faculty for a course they do not normally teach, each such
 slot incurs a penalty of 100, strongly discouraging mismatched assignments.
 
+### S2 — Subject-to-Lab Room Preference (Weight: 50 per non-preferred slot)
+Specific practical/lab courses strongly prefer their assigned CSE Lab rooms:
+  - CSE Lab 1: OOP Lab, DS Lab
+  - CSE Lab 2: DDCO Lab, DCN Lab
+  - CSE Lab 3: Microservice Lab, Full Stack Lab, CD Lab
+  - CSE Lab 4: AIML Lab, Skill Lab, MAP Tut
+If room contention requires placing a subject in a non-preferred CSE Lab, a soft penalty of 50 per slot is incurred, allowing valid fallback spillover without causing infeasibility.
+
 ---
 
 ## Notes
@@ -125,3 +133,4 @@ slot incurs a penalty of 100, strongly discouraging mismatched assignments.
 - Time limit is configurable in the UI (default shown on the Generate page).
 - The solver declares a solution OPTIMAL when the gap between the best found solution
   and the proven lower bound is within 5% (relative) or 30 penalty points (absolute).
+

@@ -837,4 +837,72 @@ def add_friday_half_day(model, x1, x2, section_courses, course_day_events):
                         if k2 in x2:
                             model.Add(x2[k2] == 0)
 
-# add_faculty_morning_penalty removed — no longer used or imported.
+
+# ===================================================================
+# S2 — Subject-to-Lab Room Preference (Soft Constraint)
+# ===================================================================
+DEFAULT_SUBJECT_LAB_PREFERENCES = [
+    {"Keyword": "OOP", "Preferred Lab": "CSE Lab 1"},
+    {"Keyword": "DS", "Preferred Lab": "CSE Lab 1"},
+    {"Keyword": "DATA STRUCTURES", "Preferred Lab": "CSE Lab 1"},
+    {"Keyword": "DDCO", "Preferred Lab": "CSE Lab 2"},
+    {"Keyword": "DCN", "Preferred Lab": "CSE Lab 2"},
+    {"Keyword": "NETWORKS", "Preferred Lab": "CSE Lab 2"},
+    {"Keyword": "MICROSERVICE", "Preferred Lab": "CSE Lab 3"},
+    {"Keyword": "FULL STACK", "Preferred Lab": "CSE Lab 3"},
+    {"Keyword": "CD", "Preferred Lab": "CSE Lab 3"},
+    {"Keyword": "COMPILER", "Preferred Lab": "CSE Lab 3"},
+    {"Keyword": "AIML", "Preferred Lab": "CSE Lab 4"},
+    {"Keyword": "SKILL", "Preferred Lab": "CSE Lab 4"},
+    {"Keyword": "MAP", "Preferred Lab": "CSE Lab 4"},
+]
+
+
+def add_subject_lab_preferences(model, lab_room, course_info, subject_lab_prefs=None, penalty_weight=50):
+    """
+    Soft Constraint S2 — Preferred Lab Room Allocation.
+
+    If a course matches a preferred CSE Lab room (e.g. OOP Lab -> CSE Lab 1),
+    allocating it to a non-preferred room incurs a soft penalty in the objective.
+    """
+    if subject_lab_prefs is None:
+        subject_lab_prefs = DEFAULT_SUBJECT_LAB_PREFERENCES
+
+    # Normalize subject_lab_prefs into a list of (keyword_upper, preferred_room)
+    rules = []
+    if isinstance(subject_lab_prefs, dict):
+        for room, kws in subject_lab_prefs.items():
+            if isinstance(kws, list):
+                for kw in kws:
+                    rules.append((str(kw).strip().upper(), room))
+            elif isinstance(kws, str):
+                rules.append((kws.strip().upper(), room))
+    elif isinstance(subject_lab_prefs, list):
+        for entry in subject_lab_prefs:
+            if isinstance(entry, dict):
+                kw = entry.get("Keyword") or entry.get("keyword") or entry.get("Subject") or entry.get("subject")
+                room = entry.get("Preferred Lab") or entry.get("preferred_lab") or entry.get("Lab Room") or entry.get("room")
+                if kw and room:
+                    rules.append((str(kw).strip().upper(), str(room).strip()))
+
+    if not rules:
+        return []
+
+    # Map course_code -> preferred_room
+    preferred_room_map = {}
+    for code, info in course_info.items():
+        name_upper = str(info.get("course_name", "")).upper()
+        code_upper = str(code).upper()
+        for kw_u, room in rules:
+            if kw_u and (kw_u in code_upper or kw_u in name_upper):
+                preferred_room_map[code] = room
+                break
+
+    penalties = []
+    for (sec, cc, etype, d, t, room), var in lab_room.items():
+        pref_room = preferred_room_map.get(cc)
+        if pref_room and room != pref_room:
+            penalties.append(penalty_weight * var)
+
+    return penalties
+

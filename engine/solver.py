@@ -42,6 +42,8 @@ from engine.constraints import (
     add_morning_first,
     add_no_empty_days,
     add_first_sem_blocking,
+    add_subject_lab_preferences,
+    DEFAULT_SUBJECT_LAB_PREFERENCES,
 )
 
 
@@ -407,6 +409,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
 
     lab_alloc = constraints_doc.get("cse_lab_allocations", [])
     first_sem_blocking = constraints_doc.get("first_sem_blocking", [])
+    subject_lab_prefs = constraints_doc.get("subject_lab_preferences", DEFAULT_SUBJECT_LAB_PREFERENCES)
 
     sections_3rd = [s for s in section_courses if s.startswith("3")]
     sections_4th = [s for s in section_courses if s.startswith("4")]
@@ -423,6 +426,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
         "maths_slots":        maths_slots,
         "lab_alloc":          lab_alloc,
         "first_sem_blocking": first_sem_blocking,
+        "subject_lab_prefs":  subject_lab_prefs,
         "sections_3rd":       sections_3rd,
         "sections_4th":       sections_4th,
         "pg_sections":        pg_sections,
@@ -883,6 +887,12 @@ def build_and_solve(
     for fac_name, vars_list in fac_mismatch_vars.items():
         if vars_list:
             penalties.append(100 * sum(vars_list))
+
+    if "subject_lab_prefs" not in skip and lab_room:
+        pref_penalties = add_subject_lab_preferences(
+            model, lab_room, course_info, mappings.get("subject_lab_prefs")
+        )
+        penalties.extend(pref_penalties)
 
     if penalties:
         model.Minimize(sum(penalties))
