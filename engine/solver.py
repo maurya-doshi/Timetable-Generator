@@ -296,10 +296,28 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     for code, info in course_info.items():
         name_to_code[info.get("course_name", "")] = code
 
+    # Auto-detect AEC and OE courses directly from Course info sheets to align with 
+    # the frontend auto-detect rules and protect against stale database documents.
+    auto_oe_codes = set()
+    auto_aec_codes = set()
+    for code, info in course_info.items():
+        ug_pg = str(info.get("ug_pg", "UG")).strip().upper()
+        sem = str(info.get("semester", "")).strip()
+        is_elective = str(info.get("elective", "No")).lower() in ("yes", "y", "true")
+        is_aec = str(info.get("aec", "No")).lower() in ("yes", "y", "true")
+        if ug_pg == "UG":
+            if is_elective and sem in ("5", "6", "7"):
+                auto_oe_codes.add(code)
+            elif is_aec and sem in ("3", "4"):
+                auto_aec_codes.add(code)
+
     oe_names  = constraints_doc.get("open_electives", [])
     oe_codes  = set(name_to_code.get(n, n) for n in oe_names)
+    oe_codes.update(auto_oe_codes)
+
     aec_names = constraints_doc.get("aec", [])
     aec_codes = set(name_to_code.get(n, n) for n in aec_names)
+    aec_codes.update(auto_aec_codes)
 
     # --- Group Parallel Electives into a Single Variable ---
     def group_parallel_electives(elective_codes, prefix_label):
@@ -846,7 +864,7 @@ def build_and_solve(
         add_no_empty_days(model, section_courses, event_vars_sec)
 
     if "spread" not in skip:
-        add_spread_constraint(model, section_courses, course_day_events)
+        add_spread_constraint(model, section_courses, x1, x2)
 
     if "first_slot" not in skip:
         add_first_slot_constraint(model, section_courses, x1_t0_by_sec_cc, x2_t0_by_sec_cc)

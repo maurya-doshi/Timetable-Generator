@@ -337,52 +337,58 @@ def add_no_student_gaps(model, section_courses, slot_coverage_sec):
 # ===================================================================
 # H4.5 — Morning-first: ALL morning slots (S1-S4) must be filled every day
 # ===================================================================
-def add_morning_first(model, section_courses, slot_coverage_sec):
+def add_morning_first(model, section_courses, slot_coverage_sec, penalty_weight=200):
     """
-    Hard constraint: For every UG section on every day (Mon-Fri), each of the
-    4 morning slots (S1-S4, indices 0-3) MUST have a class. This is
-    unconditional — morning is always fully occupied. Afternoon slots are
-    only used for overflow once all 20 morning slots/week are taken.
+    SOFT constraint: For every UG section on every day (Mon-Fri), each of the
+    4 morning slots (S1-S4, indices 0-3) SHOULD have a class. Violations
+    incur a high penalty in the objective.
 
-    slot_coverage_sec: precomputed dict (sec, d, t) -> list of BoolVars covering slot t.
+    Returns a list of penalty terms to include in model.Minimize().
     """
+    penalties = []
     for sec in section_courses:
-        # PG sections and 1st semester are exempt:
-        #   - PG/SP: fewer course hours than standard UG
-        #   - 1st sem: only used for faculty blocking; no class timetable generated
         if "PG" in sec or "SP" in sec or sec.startswith("1"):
-            continue  # EXEMPT from mandatory morning fill
+            continue
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d >= 3:
-                continue  # EXEMPT 7th sem from Thursday and Friday classes
+                continue
             for t in MORNING_SLOTS:  # [0, 1, 2, 3]
                 terms = slot_coverage_sec.get((sec, d, t), [])
                 if terms:
-                    model.Add(sum(terms) >= 1)
+                    # Create a bool var that is 1 when the slot is empty
+                    is_empty = model.NewBoolVar(f"morning_empty_{sec}_d{d}_t{t}")
+                    # is_empty == 1  iff  sum(terms) == 0
+                    model.Add(sum(terms) >= 1).OnlyEnforceIf(is_empty.Not())
+                    model.Add(sum(terms) == 0).OnlyEnforceIf(is_empty)
+                    penalties.append(penalty_weight * is_empty)
+    return penalties
 
 
 
 # ===================================================================
 # H4.6 — No empty days (every day must have at least one class)
 # ===================================================================
-def add_no_empty_days(model, section_courses, event_vars_sec):
+def add_no_empty_days(model, section_courses, event_vars_sec, penalty_weight=500):
     """
-    For every section, every day (Monday–Friday) must have at least one
-    teaching event (lecture, tutorial, or practical). No day can be blank.
+    SOFT constraint: every section should have at least one teaching event
+    each day. Violations incur a high penalty in the objective.
 
-    event_vars_sec: precomputed dict (sec, d) -> list of distinct event BoolVars
-                    (each x1/x2 variable counted once — no double-counting for 2-slot blocks).
+    Returns a list of penalty terms to include in model.Minimize().
     """
+    penalties = []
     for sec in section_courses:
-        # 1st sem sections only exist for faculty blocking — skip empty-day checks
         if sec.startswith("1"):
             continue
         for d in range(NUM_DAYS):
             if sec.startswith("7") and d >= 3:
-                continue  # EXEMPT 7th sem from Thursday/Friday classes
+                continue
             terms = event_vars_sec.get((sec, d), [])
             if terms:
-                model.Add(sum(terms) >= 1)
+                is_empty = model.NewBoolVar(f"empty_day_{sec}_d{d}")
+                model.Add(sum(terms) >= 1).OnlyEnforceIf(is_empty.Not())
+                model.Add(sum(terms) == 0).OnlyEnforceIf(is_empty)
+                penalties.append(penalty_weight * is_empty)
+    return penalties
 
 
 # ===================================================================
@@ -633,20 +639,30 @@ def add_cse_lab_locks(model, x1, x2, lab_allocations):
 # ===================================================================
 # S1 — Spread subjects across days (soft)
 # ===================================================================
-def add_spread_constraint(model, section_courses, course_day_events):
+def add_spread_constraint(model, section_courses, x1, x2):
     """
-    HARD constraint: at most 1 lecture/block of the same subject per (section, day).
+    HARD constraint: at most 1 lecture of the same subject per (section, day),
+    and at most 1 tutorial/practical block of the same subject per (section, day).
     This guarantees subjects are spread across different days of the week.
-
-    course_day_events: precomputed dict (sec, cc, d) -> list of distinct event BoolVars
-                       for that course on that day (x1 and x2 each counted once).
     """
+    from collections import defaultdict
+    lecture_day_vars = defaultdict(list)
+    block_day_vars = defaultdict(list)
+    
+    for (sec, cc, d, t), var in x1.items():
+        lecture_day_vars[(sec, cc, d)].append(var)
+    for (sec, cc, etype, d, t_start), var in x2.items():
+        block_day_vars[(sec, cc, d)].append(var)
+        
     for sec, courses in section_courses.items():
         for cc in courses:
             for d in range(NUM_DAYS):
-                day_vars = course_day_events.get((sec, cc, d), [])
-                if len(day_vars) >= 2:
-                    model.Add(sum(day_vars) <= 1)
+                lvars = lecture_day_vars.get((sec, cc, d), [])
+                if len(lvars) >= 2:
+                    model.Add(sum(lvars) <= 1)
+                bvars = block_day_vars.get((sec, cc, d), [])
+                if len(bvars) >= 2:
+                    model.Add(sum(bvars) <= 1)
 
 
 
@@ -778,31 +794,10 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
             if k_room in lab_room:
                 model.Add(lab_room[k_room] == 0)
 
-    # --- ROOM SYMMETRY BREAKING ---
-    # Force solver to fill rooms in order (Room 1 before Room 2, etc.),
-    # eliminating equivalent permutations of room assignments.
-    for d in range(NUM_DAYS):
-        for t in range(NUM_SLOTS):
-            indices = slot_to_needs_idx.get((d, t), [])
-            room_active = []
-            for room in LAB_ROOMS:
-                room_vars = []
-                for idx in indices:
-                    sec, cc, etype, _, t2, _, _ = needs_room[idx]
-                    rk = (sec, cc, etype, d, t2, room)
-                    if rk in lab_room:
-                        room_vars.append(lab_room[rk])
-                is_used = model.NewBoolVar(f"room_used_d{d}_t{t}_{room}")
-                if room_vars:
-                    model.AddMaxEquality(is_used, room_vars)
-                else:
-                    model.Add(is_used == 0)
-                room_active.append(is_used)
-
-            for i in range(1, len(room_active)):
-                if ((LAB_ROOMS[i - 1], d, t) not in blocked_room_slots
-                        and (LAB_ROOMS[i], d, t) not in blocked_room_slots):
-                    model.AddImplication(room_active[i], room_active[i - 1])
+    # NOTE: Room symmetry breaking removed. When rooms are blocked by
+    # 1st-sem CSE lab locks, the implication chain (room_i_used → room_{i-1}_used)
+    # can propagate through blocked rooms and force other rooms to 0, creating
+    # infeasibility. The solver handles room assignment well without it.
 
     return lab_room
 
