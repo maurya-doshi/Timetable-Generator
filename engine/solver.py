@@ -522,18 +522,78 @@ def _create_variables(model, section_courses, course_info, faculty_designations,
 
 
 # -----------------------------------------------------------------------
+def _assign_lab_rooms_post_solve(x1, x2, solver, section_courses, course_info, blocked_room_slots=None, subject_lab_prefs=None):
+    """
+    Fast post-solve assignment of CSE Labs 1–4 to scheduled practicals and tutorials in labs.
+    Strictly respects blocked rooms and prioritizes subject lab preferences.
+    """
+    if blocked_room_slots is None:
+        blocked_room_slots = set()
+    if subject_lab_prefs is None:
+        subject_lab_prefs = []
+
+    room_occupied = defaultdict(bool)
+    for (room, d, t) in blocked_room_slots:
+        room_occupied[(room, d, t)] = True
+
+    assigned_rooms = {}
+    events = []
+    for sec, courses in section_courses.items():
+        for cc in courses:
+            info = course_info.get(cc, {})
+            cname = info.get("course_name", cc).upper()
+            
+            # Practicals (P)
+            if info.get("P", 0) > 0:
+                for d in range(NUM_DAYS):
+                    for t in VALID_BLOCK_STARTS:
+                        k = (sec, cc, "P", d, t)
+                        if k in x2 and solver.Value(x2[k]) == 1:
+                            events.append((sec, cc, "P", d, t, 2, cname))
+                            
+            # Tutorials in lab (T)
+            if info.get("tutorial_in_lab", "No").lower() in ("yes", "y", "true") and info.get("T", 0) > 0:
+                for d in range(NUM_DAYS):
+                    for t in VALID_BLOCK_STARTS:
+                        k = (sec, cc, "T", d, t)
+                        if k in x2 and solver.Value(x2[k]) == 1:
+                            events.append((sec, cc, "T", d, t, 2, cname))
+
+    def get_preferred_room(cname):
+        for pref in subject_lab_prefs:
+            kw = pref.get("Keyword", "").upper()
+            if kw and kw in cname:
+                return pref.get("Preferred Lab", "")
+        return ""
+
+    for sec, cc, etype, d, t, dur, cname in events:
+        pref_room = get_preferred_room(cname)
+        candidate_rooms = list(LAB_ROOMS)
+        if pref_room in candidate_rooms:
+            candidate_rooms.remove(pref_room)
+            candidate_rooms.insert(0, pref_room)
+
+        for room in candidate_rooms:
+            free = True
+            for slot_offset in range(dur):
+                if room_occupied[(room, d, t + slot_offset)]:
+                    free = False
+                    break
+            if free:
+                assigned_rooms[(sec, cc, etype, d, t)] = room
+                for slot_offset in range(dur):
+                    room_occupied[(room, d, t + slot_offset)] = True
+                break
+
+    return assigned_rooms
+
+
+# -----------------------------------------------------------------------
 # Solution extraction
 # -----------------------------------------------------------------------
 def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                       course_info, faculty_assignments, faculty_designations, semester):
-    """Read solved variable values and build timetable grids + workload summary.
-
-    Returns
-    -------
-    section_timetables : {section: [[cell, ...] * 7] * 5}
-    faculty_timetables : {faculty: [[cell, ...] * 7] * 5}
-    workload           : {faculty: {"scheduled": N, "cap": M, "designation": str, "pct": float}}
-    """
+    """Read solved variable values and build timetable grids + workload summary."""
     # Build reverse lookup: (sec, cc) -> faculty name(s)
     sec_cc_to_faculty: dict[tuple, str] = {}
     for fac_name, assignments in faculty_assignments.items():
@@ -563,26 +623,14 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                 for t in range(NUM_SLOTS):
                     key = (sec, cc, d, t)
                     if key in x1 and solver.Value(x1[key]) == 1:
-                        room_name = ""
-                        for room in LAB_ROOMS:
-                            rk = (sec, cc, "L", d, t, room)
-                            if rk in lab_room and solver.Value(lab_room[rk]) == 1:
-                                room_name = room
-                                break
-                        room_suffix = f"\n{room_name}" if room_name else ""
-                        grid[d][t] = f"{cc}\n({name})\n[L]{fac_suffix}{room_suffix}"
+                        grid[d][t] = f"{cc}\n({name})\n[L]{fac_suffix}"
             for d in range(NUM_DAYS):
                 for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
                         key = (sec, cc, etype, d, t)
                         if key in x2 and solver.Value(x2[key]) == 1:
                             short = "T" if etype == "T" else "P"
-                            room_name = ""
-                            for room in LAB_ROOMS:
-                                rk = (sec, cc, etype, d, t, room)
-                                if rk in lab_room and solver.Value(lab_room[rk]) == 1:
-                                    room_name = room
-                                    break
+                            room_name = lab_room.get((sec, cc, etype, d, t), "")
                             cofacs = co_fac_assigned.get((sec, cc, d, t), [])
                             if cofacs:
                                 cofac_str = ", ".join(cofacs)
