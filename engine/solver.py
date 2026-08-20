@@ -306,10 +306,10 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
         is_elective = str(info.get("elective", "No")).lower() in ("yes", "y", "true")
         is_aec = str(info.get("aec", "No")).lower() in ("yes", "y", "true")
         if ug_pg == "UG":
-            if is_elective and sem in ("5", "6", "7"):
-                auto_oe_codes.add(code)
-            elif is_aec and sem in ("3", "4"):
+            if is_aec:
                 auto_aec_codes.add(code)
+            elif is_elective and sem in ("5", "6", "7"):
+                auto_oe_codes.add(code)
 
     oe_names  = constraints_doc.get("open_electives", [])
     oe_codes  = set(name_to_code.get(n, n) for n in oe_names)
@@ -912,7 +912,7 @@ def build_and_solve(
         )
         penalties.extend(pref_penalties)
 
-    if penalties:
+    if penalties and not is_diagnostic:
         model.Minimize(sum(penalties))
 
     # ---- Search strategy ----
