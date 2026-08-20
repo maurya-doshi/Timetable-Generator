@@ -521,6 +521,12 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
             else:
                 sec_cc_to_faculty[(sec, cc)] = fac_name
 
+    # Build active co-faculty map
+    co_fac_assigned = defaultdict(list)
+    for (fac_name, sec, cc, d, t), var in co_fac.items():
+        if solver.Value(var) == 1:
+            co_fac_assigned[(sec, cc, d, t)].append(fac_name)
+
     # --- Section timetables ---
     section_tt = {}
     for sec in section_courses:
@@ -554,9 +560,16 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                                 if rk in lab_room and solver.Value(lab_room[rk]) == 1:
                                     room_name = room
                                     break
+                            cofacs = co_fac_assigned.get((sec, cc, d, t), [])
+                            if cofacs:
+                                cofac_str = ", ".join(cofacs)
+                                block_fac_suffix = f"\nMain: {fac_label}\nCo: {cofac_str}"
+                            else:
+                                block_fac_suffix = f"\n{fac_label}" if fac_label else ""
+                                
                             room_suffix = f"\n{room_name}" if room_name else ""
-                            grid[d][t]     = f"{cc}\n({name})\n[{short}]{fac_suffix}{room_suffix}"
-                            grid[d][t + 1] = f"{cc}\n({name})\n[{short}]{fac_suffix}{room_suffix}"
+                            grid[d][t]     = f"{cc}\n({name})\n[{short}]{block_fac_suffix}{room_suffix}"
+                            grid[d][t + 1] = f"{cc}\n({name})\n[{short}]{block_fac_suffix}{room_suffix}"
         section_tt[sec] = grid
 
     # --- Faculty timetables ---
@@ -575,13 +588,25 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                         key = (sec, cc, etype, d, t)
                         if key in x2 and solver.Value(x2[key]) == 1:
                             short = "T" if etype == "T" else "P"
-                            grid[d][t]     = f"{cc} ({sec}) [{short}]"
-                            grid[d][t + 1] = f"{cc} ({sec}) [{short}]"
+                            cofacs = co_fac_assigned.get((sec, cc, d, t), [])
+                            if cofacs:
+                                cofac_str = ", ".join(cofacs)
+                                grid[d][t]     = f"{cc} ({sec}) [{short}]\nCo: {cofac_str}"
+                                grid[d][t + 1] = f"{cc} ({sec}) [{short}]\nCo: {cofac_str}"
+                            else:
+                                grid[d][t]     = f"{cc} ({sec}) [{short}]"
+                                grid[d][t + 1] = f"{cc} ({sec}) [{short}]"
 
         for (fac_name, sec, cc, d, t), var in co_fac.items():
             if fac_name == fac and solver.Value(var) == 1:
-                grid[d][t]     = f"{cc} ({sec}) [Co-Fac P]"
-                grid[d][t + 1] = f"{cc} ({sec}) [Co-Fac P]"
+                main_fac = sec_cc_to_faculty.get((sec, cc), "Unknown")
+                other_cofacs = [f for f in co_fac_assigned.get((sec, cc, d, t), []) if f != fac]
+                label = f"{cc} ({sec}) [Co-Fac P]\nMain: {main_fac}"
+                if other_cofacs:
+                    label += f"\nCo: {', '.join(other_cofacs)}"
+                
+                grid[d][t]     = label
+                grid[d][t + 1] = label
 
         faculty_tt[fac] = grid
 
