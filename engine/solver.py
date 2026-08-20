@@ -324,6 +324,9 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     # also be treated as an Open Elective (which would lock it to Slot 5).
     oe_codes -= aec_codes
 
+    # Track which specific elective course a faculty was assigned to before grouping
+    faculty_elective_subcourse: dict[tuple[str, str], str] = {}
+
     # --- Group Parallel Electives into a Single Variable ---
     def group_parallel_electives(elective_codes, prefix_label):
         sem_groups = {}
@@ -361,6 +364,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
                     for (sec, cc) in assigns:
                         if cc in codes and isinstance(sec, str) and sec.startswith(str(sem)):
                             new_assigns.append((sec, pseudo_code))
+                            faculty_elective_subcourse[(fac, pseudo_code)] = cc
                         else:
                             new_assigns.append((sec, cc))
                     faculty_assignments[fac] = list(dict.fromkeys(new_assigns))
@@ -375,53 +379,6 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
 
     oe_codes  = group_parallel_electives(oe_codes,  "OE")
     aec_codes = group_parallel_electives(aec_codes, "AEC")
-
-    # --- Institutional OE cleanup ---
-    # If the same faculty was assigned to an OE pseudo-code for ALL sections of a
-    # semester simultaneously (e.g. via semester='7' mapping to 7A+7B+7C), the OE
-    # concurrency constraint would force all those sections to the same slot — making
-    # it physically impossible for that faculty to teach all sections at once (clash).
-    #
-    # For "institutional OEs" students go to OTHER departments and OTHER department
-    # faculty teach them. CSE faculty go OUT to teach other dept students.
-    # In this case: remove the faculty's assignments to the OE sections entirely.
-    # The OE slot is still scheduled concurrently for all sections (labelled "OE"),
-    # just with no named CSE faculty. Faculty blocking for outgoing OE assignments
-    # should be handled separately via PLC entries.
-    # Collect ALL elective course codes (both pseudo-grouped and standalone)
-    all_elective_codes = set(oe_codes)
-    for code, info in course_info.items():
-        if str(info.get("elective", "No")).lower() in ("yes", "y", "true"):
-            all_elective_codes.add(code)
-
-    lookup = section_map if section_map else _SEMESTER_SECTIONS
-    for fac in list(faculty_assignments.keys()):
-        # Build map of {elective_code: [sections this faculty is assigned to]}
-        elec_sec_map: dict[str, list[str]] = {}
-        for (sec, cc) in faculty_assignments[fac]:
-            if cc in all_elective_codes:
-                elec_sec_map.setdefault(cc, []).append(sec)
-
-        # Detect institutional OE: faculty assigned to >1 section for the same elective
-        # and those sections form a complete (or near-complete) semester group
-        institutional_codes: set[str] = set()
-        for elec_cc, secs in elec_sec_map.items():
-            if len(secs) <= 1:
-                continue  # single section is fine
-            # Infer semester from the sections themselves
-            sems = set(s[0] for s in secs if s and s[0].isdigit())
-            for sem in sems:
-                expected_secs = lookup.get(sem, [])
-                secs_this_sem = [s for s in secs if s.startswith(sem)]
-                # Institutional if faculty teaches majority of sections for that semester
-                if len(secs_this_sem) >= max(2, len(expected_secs) - 1):
-                    institutional_codes.add(elec_cc)
-
-        if institutional_codes:
-            faculty_assignments[fac] = [
-                (s, c) for (s, c) in faculty_assignments[fac]
-                if c not in institutional_codes
-            ]
 
     pg_core_name = constraints_doc.get("pg_shared_core")
     pg_core_code = name_to_code.get(pg_core_name, pg_core_name) if pg_core_name else None
@@ -450,6 +407,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
         "lab_alloc":          lab_alloc,
         "first_sem_blocking": first_sem_blocking,
         "subject_lab_prefs":  subject_lab_prefs,
+        "faculty_elective_subcourse": faculty_elective_subcourse,
         "sections_3rd":       sections_3rd,
         "sections_4th":       sections_4th,
         "pg_sections":        pg_sections,
@@ -592,15 +550,20 @@ def _assign_lab_rooms_post_solve(x1, x2, solver, section_courses, course_info, b
 # Solution extraction
 # -----------------------------------------------------------------------
 def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
-                      course_info, faculty_assignments, faculty_designations, semester):
+                      course_info, faculty_assignments, faculty_designations, semester,
+                      faculty_elective_subcourse=None):
     """Read solved variable values and build timetable grids + workload summary."""
+    if faculty_elective_subcourse is None:
+        faculty_elective_subcourse = {}
+
     # Build reverse lookup: (sec, cc) -> faculty name(s)
     sec_cc_to_faculty: dict[tuple, str] = {}
     for fac_name, assignments in faculty_assignments.items():
         for sec, cc in assignments:
             existing = sec_cc_to_faculty.get((sec, cc))
             if existing:
-                sec_cc_to_faculty[(sec, cc)] = f"{existing} / {fac_name}"
+                if fac_name not in existing.split(" / "):
+                    sec_cc_to_faculty[(sec, cc)] = f"{existing} / {fac_name}"
             else:
                 sec_cc_to_faculty[(sec, cc)] = fac_name
 
@@ -648,12 +611,15 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
     for fac, assignments in faculty_assignments.items():
         grid = [["" for _ in range(NUM_SLOTS)] for _ in range(NUM_DAYS)]
         for sec, cc in assignments:
-            info = course_info.get(cc, {})
+            actual_cc = faculty_elective_subcourse.get((fac, cc), cc)
+            info = course_info.get(actual_cc, course_info.get(cc, {}))
+            cname = info.get("course_name", "")
+            cname_str = f"\n({cname})" if cname else ""
             for d in range(NUM_DAYS):
                 for t in range(NUM_SLOTS):
                     key = (sec, cc, d, t)
                     if key in x1 and solver.Value(x1[key]) == 1:
-                        grid[d][t] = f"{cc} ({sec}) [L]"
+                        grid[d][t] = f"{actual_cc}{cname_str}\n({sec}) [L]"
                 for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
                         key = (sec, cc, etype, d, t)
@@ -662,11 +628,11 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                             cofacs = co_fac_assigned.get((sec, cc, d, t), [])
                             if cofacs:
                                 cofac_str = ", ".join(cofacs)
-                                grid[d][t]     = f"{cc} ({sec}) [{short}]\nCo: {cofac_str}"
-                                grid[d][t + 1] = f"{cc} ({sec}) [{short}]\nCo: {cofac_str}"
+                                grid[d][t]     = f"{actual_cc}{cname_str}\n({sec}) [{short}]\nCo: {cofac_str}"
+                                grid[d][t + 1] = f"{actual_cc}{cname_str}\n({sec}) [{short}]\nCo: {cofac_str}"
                             else:
-                                grid[d][t]     = f"{cc} ({sec}) [{short}]"
-                                grid[d][t + 1] = f"{cc} ({sec}) [{short}]"
+                                grid[d][t]     = f"{actual_cc}{cname_str}\n({sec}) [{short}]"
+                                grid[d][t + 1] = f"{actual_cc}{cname_str}\n({sec}) [{short}]"
 
         for (fac_name, sec, cc, d, t), var in co_fac.items():
             if fac_name == fac and solver.Value(var) == 1:
@@ -690,15 +656,20 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
     workload = {}
     for fac, assignments in faculty_assignments.items():
         scheduled = 0
+        seen_events = set()
         for sec, cc in assignments:
             for d in range(NUM_DAYS):
                 for t in range(NUM_SLOTS):
                     if (sec, cc, d, t) in x1 and solver.Value(x1[(sec, cc, d, t)]) == 1:
-                        scheduled += 1
+                        if (cc, d, t) not in seen_events:
+                            seen_events.add((cc, d, t))
+                            scheduled += 1
                 for t in VALID_BLOCK_STARTS:
                     for etype in ("T", "P"):
                         if (sec, cc, etype, d, t) in x2 and solver.Value(x2[(sec, cc, etype, d, t)]) == 1:
-                            scheduled += 1
+                            if (cc, etype, d, t) not in seen_events:
+                                seen_events.add((cc, etype, d, t))
+                                scheduled += 1
 
         for (fn, sec, cc, d, t), var in co_fac.items():
             if fn == fac and solver.Value(var) == 1:
@@ -747,7 +718,7 @@ def _generate_infeasibility_hints(semester: str, section_map: dict | None, hint_
         semester=semester, time_limit_seconds=hint_time,
         section_map=section_map, _skip_constraints=_ALL_OPTIONAL
     )
-    if r1["status"] in ("INFEASIBLE", "UNKNOWN", "MODEL_INVALID"):
+    if r1["status"] in ("INFEASIBLE", "MODEL_INVALID"):
         hints.append(
             "**Root cause:** Even the bare-minimum constraints (faculty clash, "
             "section clash, weekly hours) are unsatisfiable."
@@ -765,7 +736,7 @@ def _generate_infeasibility_hints(semester: str, section_map: dict | None, hint_
         section_map=section_map,
         _skip_constraints=_ALL_OPTIONAL - {"workload"},
     )
-    if r2["status"] in ("INFEASIBLE", "UNKNOWN", "MODEL_INVALID"):
+    if r2["status"] in ("INFEASIBLE", "MODEL_INVALID"):
         hints.append(
             "**Root cause:** Adding **workload caps (H16)** makes the model infeasible."
         )
@@ -782,7 +753,7 @@ def _generate_infeasibility_hints(semester: str, section_map: dict | None, hint_
         semester=semester, time_limit_seconds=hint_time,
         section_map=section_map, _skip_constraints=_QUALITY,
     )
-    if r3["status"] in ("INFEASIBLE", "UNKNOWN", "MODEL_INVALID"):
+    if r3["status"] in ("INFEASIBLE", "MODEL_INVALID"):
         hints.append(
             "**Root cause:** The **special subject constraints** (OE concurrency, "
             "AEC concurrency, PG shared classes, Maths locks, or CSE lab blocks) "
@@ -916,7 +887,13 @@ def build_and_solve(
 
     events_by_fac = defaultdict(list)
     for fac, assignments in mappings["faculty_assignments"].items():
+        seen_courses = set()
         for sec, cc in assignments:
+            is_grouped = cc.startswith("CSOE_") or cc.startswith("CSAEC_") or cc == mappings.get("pg_core_code")
+            if is_grouped:
+                if cc in seen_courses:
+                    continue
+                seen_courses.add(cc)
             events_by_fac[fac].extend(x1_by_sec_cc.get((sec, cc), []))
             events_by_fac[fac].extend(x2_by_sec_cc.get((sec, cc), []))
 
@@ -1058,7 +1035,8 @@ def build_and_solve(
         result["timetables"], result["faculty_timetables"], result["workload"] = (
             _extract_solution(solver, x1, x2, co_fac, assigned_lab_rooms, section_courses,
                               course_info, faculty_assignments,
-                              mappings["faculty_designations"], semester)
+                              mappings["faculty_designations"], semester,
+                              mappings.get("faculty_elective_subcourse"))
         )
 
     elif status_code == cp_model.INFEASIBLE:

@@ -56,25 +56,19 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
     intervals_by_fac_day = defaultdict(list)   # (fac, d) -> list of OptionalIntervalVar
 
     for fac, assignments in faculty_assignments.items():
-        seen_pg_core = set()   # (cc, d, t, etype) — dedup per faculty
+        seen_events = set()   # (cc, d, t, etype) — dedup per faculty across parallel/shared sections
 
         for sec, cc in assignments:
-            is_pg_core = (
-                pg_shared_core_code and cc == pg_shared_core_code
-                and pg_sections and sec in pg_sections
-            )
-
             for d in range(NUM_DAYS):
                 # 1-slot lecture → padded to duration 2
                 for t in range(NUM_SLOTS):
                     key = (sec, cc, d, t)
                     if key not in x1:
                         continue
-                    if is_pg_core:
-                        dedup = (cc, d, t, "L")
-                        if dedup in seen_pg_core:
-                            continue
-                        seen_pg_core.add(dedup)
+                    dedup = (cc, d, t, "L")
+                    if dedup in seen_events:
+                        continue
+                    seen_events.add(dedup)
                     iv = model.NewOptionalIntervalVar(
                         t, 2, t + 2, x1[key],
                         f"iv_fac_L_{fac}_{sec}_{cc}_d{d}_t{t}"
@@ -87,11 +81,10 @@ def add_no_faculty_clash(model, x1, x2, co_fac, faculty_assignments, pg_shared_c
                         key = (sec, cc, etype, d, t)
                         if key not in x2:
                             continue
-                        if is_pg_core:
-                            dedup = (cc, d, t, etype)
-                            if dedup in seen_pg_core:
-                                continue
-                            seen_pg_core.add(dedup)
+                        dedup = (cc, d, t, etype)
+                        if dedup in seen_events:
+                            continue
+                        seen_events.add(dedup)
                         iv = model.NewOptionalIntervalVar(
                             t, 3, t + 3, x2[key],
                             f"iv_fac_{etype}_{fac}_{sec}_{cc}_d{d}_t{t}"
