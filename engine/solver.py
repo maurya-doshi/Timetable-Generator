@@ -943,12 +943,7 @@ def build_and_solve(
         _blocked = add_cse_lab_locks(model, x1, x2, mappings["lab_alloc"])
     else:
         _blocked = []
-
-    if "lab_rooms" not in skip:
-        lab_room = add_lab_room_assignment(model, x1, x2, section_courses, course_info,
-                                           mappings["pg_sections"], _blocked)
-    else:
-        lab_room = {}
+    lab_room = {}
 
     if "friday_half_day" not in skip:
         add_friday_half_day(model, x1, x2, section_courses, course_day_events)
@@ -1056,8 +1051,12 @@ def build_and_solve(
     }
 
     if status_code in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        assigned_lab_rooms = _assign_lab_rooms_post_solve(
+            x1, x2, solver, section_courses, course_info,
+            _blocked, mappings.get("subject_lab_prefs")
+        )
         result["timetables"], result["faculty_timetables"], result["workload"] = (
-            _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
+            _extract_solution(solver, x1, x2, co_fac, assigned_lab_rooms, section_courses,
                               course_info, faculty_assignments,
                               mappings["faculty_designations"], semester)
         )
