@@ -84,7 +84,7 @@ def _write_grid(ws, title: str, grid: list, header_fill: PatternFill):
         Rows 3-7 -- data rows (one per day)
     """
     # --- Title row ---
-    ws.merge_cells("A1:H1")
+    ws.merge_cells("A1:I1")
     tc = ws["A1"]
     tc.value = title
     tc.font = _TITLE_FONT
@@ -118,7 +118,7 @@ def _write_grid(ws, title: str, grid: list, header_fill: PatternFill):
         dc.alignment = _CENTER
         dc.border = _BORDER
 
-        for t_idx in range(7):
+        for t_idx in range(8):
             raw = ""
             if d_idx < len(grid) and t_idx < len(grid[d_idx]):
                 raw = grid[d_idx][t_idx] or ""
