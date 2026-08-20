@@ -170,10 +170,16 @@ if not default_maths:
         {"Class": "3D", "Day": "Friday", "Slot": "S1 (9:00 - 9:55)", "Faculty": "MATHS"},
     ]
 
+# Clean and sanitize default_maths
+default_maths = [
+    m for m in default_maths 
+    if isinstance(m, dict) and isinstance(m.get("Class"), str) and m.get("Class").strip() and str(m.get("Class")) != "nan"
+]
+
 # Ensure all existing classes in saved maths_slots are in options
 for m in default_maths:
-    c = m.get("Class")
-    if c and c not in all_classes:
+    c = str(m.get("Class")).strip()
+    if c and c != "nan" and c not in all_classes:
         all_classes.append(c)
 
 df_maths = pd.DataFrame(default_maths)
@@ -184,7 +190,6 @@ edited_maths_df = st.data_editor(
         "Class": st.column_config.SelectboxColumn("Class Section", options=all_classes),
         "Day": st.column_config.SelectboxColumn("Day", options=days),
         "Slot": st.column_config.SelectboxColumn("Slot", options=slots),
-
         "Faculty": st.column_config.TextColumn("Faculty Name (Optional)", default="Maths Faculty")
     },
     use_container_width=True,
@@ -221,11 +226,15 @@ lab_slots = [
 
 # Load existing lab allocations if any; start with a single empty row as example
 default_lab_alloc = current_config.get("cse_lab_allocations", [])
+default_lab_alloc = [
+    r for r in default_lab_alloc 
+    if isinstance(r, dict) and isinstance(r.get("Class"), str) and r.get("Class").strip() and str(r.get("Class")) != "nan"
+]
 
 # Ensure all existing classes in saved lab_alloc are in options
 for r in default_lab_alloc:
-    c = r.get("Class")
-    if c and c not in first_second_sections:
+    c = str(r.get("Class")).strip()
+    if c and c != "nan" and c not in first_second_sections:
         first_second_sections.append(c)
 
 df_lab = pd.DataFrame(default_lab_alloc, columns=["Class", "Lab Room", "Day", "Slot"])
@@ -257,11 +266,15 @@ first_sem_sections = [s for s in section_map.get("1", [])] if "1" in section_map
 all_course_codes = [c.get("course_code") for c in courses if c.get("course_code")]
 
 default_first_sem = current_config.get("first_sem_blocking", [])
+default_first_sem = [
+    r for r in default_first_sem 
+    if isinstance(r, dict) and isinstance(r.get("Class"), str) and r.get("Class").strip() and str(r.get("Class")) != "nan"
+]
 
 # Ensure saved sections are in options
 for r in default_first_sem:
-    c = r.get("Class")
-    if c and c not in first_sem_sections:
+    c = str(r.get("Class")).strip()
+    if c and c != "nan" and c not in first_sem_sections:
         first_sem_sections.append(c)
 
 df_first_sem = pd.DataFrame(default_first_sem, columns=["Class", "Course Code", "Day", "Slot"])

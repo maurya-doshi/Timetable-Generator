@@ -432,55 +432,84 @@ def add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments):
 # ===================================================================
 def add_oe_concurrency(model, section_courses, oe_course_codes, x1_keys_by_sec_cc):
     """
-    For each OE course, lock its lectures to exactly Monday, Tuesday,
-    and Wednesday at Slot 5 (1:45 - 2:40).
+    Ensure all sections of the same semester take their OE lectures concurrently.
+    The solver freely picks which (day, slot) combinations to use — no fixed slot.
+    Shared BoolVars guarantee that if section 5A has an OE lecture on Monday S2,
+    then 5B/5C/5D must also have it on Monday S2.
 
     x1_keys_by_sec_cc: precomputed dict (sec, cc) → list of (d, t, var).
-    Single-pass approach: iterate only the actual x1 vars for this (sec, cc)
-    and force each to 1 (target) or 0 (non-target) in one loop.
     """
-    target_set = {(0, 5), (1, 5), (2, 5)}
-
     for cc in oe_course_codes:
-        for sec, courses in section_courses.items():
-            if cc not in courses:
-                continue
+        relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
+        if len(relevant_secs) <= 1:
+            continue
+
+        # Only consider (d,t) pairs available to ALL sections
+        dt_per_sec = {}
+        for sec in relevant_secs:
+            sec_dts = set()
+            for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), []):
+                sec_dts.add((d, t))
+            dt_per_sec[sec] = sec_dts
+
+        common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
+        if not common_dt:
+            continue
+
+        # Create shared BoolVars — solver picks which slots to use
+        shared = {(d, t): model.NewBoolVar(f"oe_{cc}_d{d}_t{t}") for (d, t) in common_dt}
+
+        # Force each section's x1 vars to match the shared schedule
+        for sec in relevant_secs:
             for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
-                if (d, t) in target_set:
-                    model.Add(var == 1)   # must be scheduled
+                if (d, t) in shared:
+                    model.Add(var == shared[(d, t)])
                 else:
-                    model.Add(var == 0)   # must not be scheduled
+                    model.Add(var == 0)  # slot not common to all sections
 
 
 # ===================================================================
-# H7 — AEC concurrency (3rd/4th sem at same day+slot)
+# H7 — AEC concurrency (locked to S5 Mon/Tue/Wed)
 # ===================================================================
 def add_aec_concurrency(model, section_courses, aec_course_codes, sections_3rd, sections_4th,
                          x1_keys_by_sec_cc):
     """
-    All AEC-tagged courses for 3rd & 4th semester sections are scheduled at the exact
-    same (day, slot). Shared BoolVars are only created for (d, t) pairs that actually
-    have x1 variables, reducing from NUM_DAYS×NUM_SLOTS=35 vars per course to however
-    many slot combos are reachable.
+    Lock AEC courses to S5 (slot 5) on Monday, Tuesday, and Wednesday.
+    All relevant 3rd & 4th semester sections take AECs concurrently within
+    those fixed slots. Non-target slots are zeroed out; shared BoolVars
+    ensure cross-section concurrency within the target window.
 
     x1_keys_by_sec_cc: precomputed dict (sec, cc) → list of (d, t, var).
     """
+    target_set = {(0, 5), (1, 5), (2, 5)}  # Mon/Tue/Wed at S5
     aec_sections = sections_3rd + sections_4th
+
     for cc in aec_course_codes:
         relevant = [s for s in aec_sections if cc in section_courses.get(s, [])]
+        if not relevant:
+            continue
+
+        # Force all non-target slots to 0 — AECs can only be at S5 Mon/Tue/Wed
+        for sec in relevant:
+            for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
+                if (d, t) not in target_set:
+                    model.Add(var == 0)
+
+        # If only 1 section, slot restriction above is sufficient
         if len(relevant) <= 1:
             continue
 
-        # Only create shared vars for (d, t) that have actual x1 variables
-        existing_dt = set()
+        # Shared BoolVars for target slots — forces all sections to agree
+        valid_targets = set()
         for sec in relevant:
             for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), []):
-                existing_dt.add((d, t))
-        if not existing_dt:
+                if (d, t) in target_set:
+                    valid_targets.add((d, t))
+
+        if not valid_targets:
             continue
 
-        shared = {(d, t): model.NewBoolVar(f"aec_{cc}_d{d}_t{t}") for (d, t) in existing_dt}
-        model.Add(sum(shared.values()) == 1)
+        shared = {(d, t): model.NewBoolVar(f"aec_{cc}_d{d}_t{t}") for (d, t) in valid_targets}
 
         for sec in relevant:
             for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
@@ -641,15 +670,15 @@ def add_cse_lab_locks(model, x1, x2, lab_allocations):
 # ===================================================================
 # S1 — Spread subjects across days (soft)
 # ===================================================================
-def add_spread_constraint(model, section_courses, x1, x2):
+def add_spread_constraint(model, section_courses, x1, x2, course_info=None):
     """
-    HARD constraint: at most 1 lecture of the same subject per (section, day),
-    and at most 1 tutorial/practical block of the same subject per (section, day).
-    This guarantees subjects are spread across different days of the week.
+    SOFT constraint: penalize multiple lectures or multiple practical blocks of the same
+    subject for the same section on the same day. Returns penalty terms to add to the objective.
     """
     from collections import defaultdict
     lecture_day_vars = defaultdict(list)
     block_day_vars = defaultdict(list)
+    penalties = []
     
     for (sec, cc, d, t), var in x1.items():
         lecture_day_vars[(sec, cc, d)].append(var)
@@ -661,10 +690,17 @@ def add_spread_constraint(model, section_courses, x1, x2):
             for d in range(NUM_DAYS):
                 lvars = lecture_day_vars.get((sec, cc, d), [])
                 if len(lvars) >= 2:
-                    model.Add(sum(lvars) <= 1)
+                    is_multi = model.NewBoolVar(f"multi_lec_{sec}_{cc}_d{d}")
+                    model.Add(sum(lvars) >= 2).OnlyEnforceIf(is_multi)
+                    model.Add(sum(lvars) <= 1).OnlyEnforceIf(is_multi.Not())
+                    penalties.append(10 * is_multi)
                 bvars = block_day_vars.get((sec, cc, d), [])
                 if len(bvars) >= 2:
-                    model.Add(sum(bvars) <= 1)
+                    is_multi_b = model.NewBoolVar(f"multi_blk_{sec}_{cc}_d{d}")
+                    model.Add(sum(bvars) >= 2).OnlyEnforceIf(is_multi_b)
+                    model.Add(sum(bvars) <= 1).OnlyEnforceIf(is_multi_b.Not())
+                    penalties.append(10 * is_multi_b)
+    return penalties
 
 
 
@@ -726,7 +762,7 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
                         if k in x2:
                             needs_room.append((sec, cc, "P", d, t, 2, x2[k]))
                             
-            # Tutorials in lab
+            # Tutorials explicitly marked as needing a computer lab
             if info.get("tutorial_in_lab", "No").lower() in ("yes", "y", "true"):
                 T = info.get("T", 0)
                 if T > 0:
@@ -735,16 +771,6 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
                             k = (sec, cc, "T", d, t)
                             if k in x2:
                                 needs_room.append((sec, cc, "T", d, t, 2, x2[k]))
-                                
-            # AEC lectures in lab
-            if info.get("aec", "No").lower() in ("yes", "y", "true"):
-                L = info.get("L", 0)
-                if L > 0:
-                    for d in range(NUM_DAYS):
-                        for t in range(NUM_SLOTS):
-                            k = (sec, cc, d, t)
-                            if k in x1:
-                                needs_room.append((sec, cc, "L", d, t, 1, x1[k]))
 
     # Create room-assignment BoolVars
     lab_room = {}
@@ -753,11 +779,10 @@ def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
             var = model.NewBoolVar(f"room_{sec}_{cc}_{etype}_d{d}_t{t}_{room}")
             lab_room[(sec, cc, etype, d, t, room)] = var
 
-    # Constraint 1 & 2: scheduled ↔ exactly 1 room
+    # Constraint 1 & 2: each event gets at most 1 room (from available CSE Labs 1-4)
     for (sec, cc, etype, d, t, duration, active_var) in needs_room:
         room_vars = [lab_room[(sec, cc, etype, d, t, room)] for room in LAB_ROOMS]
-        # sum(room_vars) == active_var  (1 if scheduled, 0 if not)
-        model.Add(sum(room_vars) == active_var)
+        model.Add(sum(room_vars) <= active_var)
 
     # Constraint 3: no room double-booking via AddNoOverlap
     # Each (event, room) pair becomes an optional interval; AddNoOverlap on intervals
@@ -828,7 +853,7 @@ def add_friday_half_day(model, x1, x2, section_courses, course_day_events):
                     if k1 in x1:
                         model.Add(x1[k1] == 0)
                 # Zero Friday afternoon block starts (S5-S6 and S6-S7)
-                for t in [4, 5]:
+                for t in [5, 6]:
                     for etype in ("T", "P"):
                         k2 = (sec, cc, etype, DAY_FRI, t)
                         if k2 in x2:

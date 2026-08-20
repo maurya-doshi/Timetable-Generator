@@ -221,7 +221,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     maths_sections = set()
     for entry in maths_slots:
         cls = entry.get("Class", "")
-        if cls:
+        if cls and isinstance(cls, str) and cls.strip():
             maths_sections.add(cls)
     for sec in maths_sections:
         if "MATHS" not in section_courses.get(sec, []):
@@ -319,6 +319,11 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     aec_codes = set(name_to_code.get(n, n) for n in aec_names)
     aec_codes.update(auto_aec_codes)
 
+    # Manual AEC selection takes priority: if a course is tagged as AEC
+    # (either via Excel column or via the Constraints page), it must NOT
+    # also be treated as an Open Elective (which would lock it to Slot 5).
+    oe_codes -= aec_codes
+
     # --- Group Parallel Electives into a Single Variable ---
     def group_parallel_electives(elective_codes, prefix_label):
         sem_groups = {}
@@ -346,7 +351,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
                     "elective": "Yes"
                 }
                 for sec, courses in section_courses.items():
-                    if sec.startswith(sem):
+                    if isinstance(sec, str) and sec.startswith(str(sem)):
                         filtered = [c for c in courses if c not in codes]
                         if len(filtered) < len(courses):
                             filtered.append(pseudo_code)
@@ -354,7 +359,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
                 for fac, assigns in faculty_assignments.items():
                     new_assigns = []
                     for (sec, cc) in assigns:
-                        if cc in codes and sec.startswith(sem):
+                        if cc in codes and isinstance(sec, str) and sec.startswith(str(sem)):
                             new_assigns.append((sec, pseudo_code))
                         else:
                             new_assigns.append((sec, cc))
@@ -477,19 +482,37 @@ def _create_variables(model, section_courses, course_info, faculty_designations,
 
             if L > 0:
                 for d in range(NUM_DAYS):
+                    # Skip Thursday and Friday for 7th Sem
+                    if sec.startswith("7") and d >= 3:
+                        continue
                     for t in range(NUM_SLOTS):
+                        # Skip Friday Afternoon slots (S5, S6, S7)
+                        if d == 4 and t >= 5:
+                            continue
                         x1[(sec, cc, d, t)] = model.NewBoolVar(f"lec_{sec}_{cc}_d{d}_t{t}")
 
             if T > 0:
                 for d in range(NUM_DAYS):
+                    # Skip Thursday and Friday for 7th Sem
+                    if sec.startswith("7") and d >= 3:
+                        continue
                     for t in VALID_BLOCK_STARTS:
+                        # Skip Friday Afternoon starts (S5-S6, S6-S7)
+                        if d == 4 and t >= 5:
+                            continue
                         x2[(sec, cc, "T", d, t)] = model.NewBoolVar(f"tut_{sec}_{cc}_d{d}_t{t}")
 
             if P > 0:
                 primary_fac   = primary_faculty_for.get((sec, cc), set())
                 eligible_cofac = [f for f in all_faculty if f not in primary_fac]
                 for d in range(NUM_DAYS):
+                    # Skip Thursday and Friday for 7th Sem
+                    if sec.startswith("7") and d >= 3:
+                        continue
                     for t in VALID_BLOCK_STARTS:
+                        # Skip Friday Afternoon starts (S5-S6, S6-S7)
+                        if d == 4 and t >= 5:
+                            continue
                         x2[(sec, cc, "P", d, t)] = model.NewBoolVar(f"prac_{sec}_{cc}_d{d}_t{t}")
                         for fac_name in eligible_cofac:
                             k_cf = (fac_name, sec, cc, d, t)
@@ -888,8 +911,9 @@ def build_and_solve(
     if "no_empty_days" not in skip:
         add_no_empty_days(model, section_courses, event_vars_sec)
 
+    spread_penalties = []
     if "spread" not in skip:
-        add_spread_constraint(model, section_courses, x1, x2)
+        spread_penalties = add_spread_constraint(model, section_courses, x1, x2, course_info)
 
     if "first_slot" not in skip:
         add_first_slot_constraint(model, section_courses, x1_t0_by_sec_cc, x2_t0_by_sec_cc)
@@ -915,6 +939,9 @@ def build_and_solve(
 
     # ---- Soft objective ----
     penalties = []
+    if spread_penalties:
+        penalties.extend(spread_penalties)
+
     fac_taught_courses = {}
     for fac, assigns in mappings["faculty_assignments"].items():
         fac_taught_courses[fac] = {cc for (_, cc) in assigns}
