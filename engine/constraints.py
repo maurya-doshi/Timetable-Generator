@@ -320,8 +320,6 @@ def add_no_student_gaps(model, section_courses, slot_coverage_sec):
                 active.append(is_active)
 
             for t in range(NUM_SLOTS - 1):
-                if t == LUNCH_BOUNDARY:
-                    continue  # S5 may be empty even if S4 is occupied
                 a_next = active[t + 1]
                 a_curr = active[t]
                 if a_next is None:
@@ -335,17 +333,13 @@ def add_no_student_gaps(model, section_courses, slot_coverage_sec):
 
 
 # ===================================================================
-# H4.5 — Morning-first: ALL morning slots (S1-S4) must be filled every day
+# H4.5 — Morning-first: ALL morning slots (S1-S4) must be filled every day (hard)
 # ===================================================================
-def add_morning_first(model, section_courses, slot_coverage_sec, penalty_weight=200):
+def add_morning_first(model, section_courses, slot_coverage_sec):
     """
-    SOFT constraint: For every UG section on every day (Mon-Fri), each of the
-    4 morning slots (S1-S4, indices 0-3) SHOULD have a class. Violations
-    incur a high penalty in the objective.
-
-    Returns a list of penalty terms to include in model.Minimize().
+    HARD constraint: For every UG section on every day (Mon-Fri), each of the
+    4 morning slots (S1-S4, indices 0-3) MUST have a class.
     """
-    penalties = []
     for sec in section_courses:
         if "PG" in sec or "SP" in sec or sec.startswith("1"):
             continue
@@ -355,13 +349,9 @@ def add_morning_first(model, section_courses, slot_coverage_sec, penalty_weight=
             for t in MORNING_SLOTS:  # [0, 1, 2, 3]
                 terms = slot_coverage_sec.get((sec, d, t), [])
                 if terms:
-                    # Create a bool var that is 1 when the slot is empty
-                    is_empty = model.NewBoolVar(f"morning_empty_{sec}_d{d}_t{t}")
-                    # is_empty == 1  iff  sum(terms) == 0
-                    model.Add(sum(terms) >= 1).OnlyEnforceIf(is_empty.Not())
-                    model.Add(sum(terms) == 0).OnlyEnforceIf(is_empty)
-                    penalties.append(penalty_weight * is_empty)
-    return penalties
+                    model.Add(sum(terms) >= 1)
+                else:
+                    model.AddBoolOr([]) # force infeasible if slot has no possible classes
 
 
 
