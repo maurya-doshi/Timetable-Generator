@@ -132,7 +132,7 @@ def _write_grid(ws, title: str, grid: list, header_fill: PatternFill):
 
     # --- Column widths ---
     ws.column_dimensions["A"].width = _COL_A_WIDTH
-    for col_i in range(2, 9):
+    for col_i in range(2, 10):
         ws.column_dimensions[get_column_letter(col_i)].width = _COL_SLOT_WIDTH
 
     # Freeze the header rows so they stay visible when scrolling
