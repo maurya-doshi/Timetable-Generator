@@ -142,7 +142,7 @@ if not all_classes:
 days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
 slots = [
     "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)", 
-    "S4 (12:00 - 12:50)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
+    "S4 (12:00 - 12:50)", "L1 (12:50 - 1:45)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
 ]
 
 default_maths = current_config.get("maths_slots", [])
@@ -216,7 +216,7 @@ if not first_second_sections:
 lab_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 lab_slots = [
     "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)",
-    "S4 (12:00 - 12:50)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
+    "S4 (12:00 - 12:50)", "L1 (12:50 - 1:45)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
 ]
 
 # Load existing lab allocations if any; start with a single empty row as example

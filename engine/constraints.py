@@ -21,11 +21,11 @@ from ortools.sat.python import cp_model
 # Constants
 # ---------------------------------------------------------------------------
 NUM_DAYS = 5
-NUM_SLOTS = 7
+NUM_SLOTS = 8
 MORNING_SLOTS = [0, 1, 2, 3]          # S1-S4 must always be filled
-AFTERNOON_SLOTS = [4, 5, 6]           # S5-S7
-# Valid start-slots for 2-consecutive-slot blocks (can't span lunch S4→S5)
-VALID_BLOCK_STARTS = [0, 2, 4, 5]  # pairs: S1-S2 (0,1), S3-S4 (2,3), S5-S6 (4,5), S6-S7 (5,6)
+AFTERNOON_SLOTS = [5, 6, 7]           # S5-S7
+# Valid start-slots for 2-consecutive-slot blocks (can't span lunch breaks)
+VALID_BLOCK_STARTS = [0, 2, 5, 6]  # pairs: S1-S2 (0,1), S3-S4 (2,3), S5-S6 (5,6), S6-S7 (6,7)
 
 
 # ===================================================================
@@ -318,16 +318,28 @@ def add_no_student_gaps(model, section_courses, slot_coverage_sec):
                 else:
                     is_active = None   # always empty — skip var creation
                 active.append(is_active)
+            
+            # For 3rd, 5th, 7th sem, L1 (slot 4) is their fixed lunch break.
+            if active[4] is not None:
+                model.Add(active[4] == 0)
 
-            for t in range(NUM_SLOTS - 1):
-                a_next = active[t + 1]
+            for t in range(1, NUM_SLOTS):
                 a_curr = active[t]
-                if a_next is None:
-                    continue                    # next slot always empty — nothing to propagate
                 if a_curr is None:
-                    model.Add(a_next == 0)     # curr always empty → next must also be 0
+                    continue
+                    
+                # Determine the logical previous slot
+                if t == 5:
+                    a_prev = active[3]  # S5 implies S4 (skipping L1 lunch)
+                elif t == 4:
+                    continue            # L1 is always empty for solver sections
                 else:
-                    model.AddImplication(a_next, a_curr)
+                    a_prev = active[t - 1]
+                
+                if a_prev is None:
+                    model.Add(a_curr == 0)
+                else:
+                    model.AddImplication(a_curr, a_prev)
 
 
 
@@ -427,7 +439,7 @@ def add_oe_concurrency(model, section_courses, oe_course_codes, x1_keys_by_sec_c
     Single-pass approach: iterate only the actual x1 vars for this (sec, cc)
     and force each to 1 (target) or 0 (non-target) in one loop.
     """
-    target_set = {(0, 4), (1, 4), (2, 4)}
+    target_set = {(0, 5), (1, 5), (2, 5)}
 
     for cc in oe_course_codes:
         for sec, courses in section_courses.items():
@@ -530,8 +542,8 @@ def add_pg_shared(model, section_courses, pg_sections,
 SLOT_LABEL_TO_IDX = {
     "S1 (9:00 - 9:55)": 0, "S2 (9:55 - 10:50)": 1,
     "S3 (11:05 - 12:00)": 2, "S4 (12:00 - 12:50)": 3,
-    "S5 (1:45 - 2:40)": 4, "S6 (2:40 - 3:35)": 5,
-    "S7 (3:35 - 4:30)": 6,
+    "L1 (12:50 - 1:45)": 4, "S5 (1:45 - 2:40)": 5, 
+    "S6 (2:40 - 3:35)": 6, "S7 (3:35 - 4:30)": 7,
 }
 DAY_LABEL_TO_IDX = {
     "Monday": 0, "Tuesday": 1, "Wednesday": 2,

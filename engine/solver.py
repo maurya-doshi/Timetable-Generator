@@ -48,7 +48,7 @@ from engine.constraints import (
 
 
 DAYS_LABELS  = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-SLOTS_LABELS = ["S1", "S2", "S3", "S4", "S5", "S6", "S7"]
+SLOTS_LABELS = ["S1", "S2", "S3", "S4", "L1", "S5", "S6", "S7"]
 
 # -----------------------------------------------------------------------
 # Default section map (also mirrored in db._DEFAULT_SECTION_MAP)

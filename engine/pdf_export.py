@@ -91,15 +91,15 @@ def create_timetables_pdf(
     DAYS  = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
     SLOTS = [
         "S1 (9:00-9:55)", "S2 (9:55-10:50)", "S3 (11:05-12:00)",
-        "S4 (12:00-12:50)", "S5 (1:45-2:40)", "S6 (2:40-3:35)", "S7 (3:35-4:30)",
+        "S4 (12:00-12:50)", "L1 (12:50-1:45)", "S5 (1:45-2:40)", "S6 (2:40-3:35)", "S7 (3:35-4:30)",
     ]
 
     header_row = [Paragraph("<b>Day</b>", header_style)] + [
         Paragraph(f"<b>{slot}</b>", header_style) for slot in SLOTS
     ]
 
-    # 782 usable width: 72 for Day, 101 each for 7 slots
-    col_widths = [72] + [101] * 7
+    # 782 usable width: 74 for Day, 88.5 each for 8 slots
+    col_widths = [74] + [88.5] * 8
 
     # Build the metadata subtitle string (#13)
     meta_parts = []
