@@ -66,6 +66,15 @@ def _style_sec(v):
 def _style_fac(v):
     return "background-color:#e3f2fd;color:black;" if v else "background-color:#f5f5f5;color:black;"
 
+def _pad_grid(grid):
+    padded = []
+    for row in grid:
+        if len(row) < len(SLOTS):
+            row = row + [""] * (len(SLOTS) - len(row))
+        elif len(row) > len(SLOTS):
+            row = row[:len(SLOTS)]
+        padded.append(row)
+    return padded
 
 def _make_diff_styles(data: pd.DataFrame, changed: pd.DataFrame) -> pd.DataFrame:
     """Return a DataFrame of CSS strings for use with style.apply(axis=None)."""
@@ -400,7 +409,7 @@ tab_sec, tab_all_sec, tab_fac, tab_all_fac = st.tabs([
 with tab_sec:
     selected_sec = st.selectbox("Select Section to View", sorted(timetables.keys()), key="sel_sec")
     if selected_sec:
-        grid = timetables[selected_sec]
+        grid = _pad_grid(timetables[selected_sec])
         df   = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
         st.dataframe(df.style.map(_style_sec), use_container_width=True, height=250)
 
@@ -411,7 +420,7 @@ with tab_all_sec:
     for i, sec in enumerate(sorted(timetables.keys())):
         with sec_cols[i % 2]:
             st.subheader(f"Section {sec}")
-            grid = timetables[sec]
+            grid = _pad_grid(timetables[sec])
             df   = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
             st.dataframe(df.style.map(_style_sec), use_container_width=True, height=230)
 
@@ -419,7 +428,7 @@ with tab_all_sec:
 with tab_fac:
     selected_fac = st.selectbox("Select Faculty to View", sorted(fac_tt.keys()), key="sel_fac")
     if selected_fac:
-        grid = fac_tt[selected_fac]
+        grid = _pad_grid(fac_tt[selected_fac])
         df   = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
         st.dataframe(df.style.map(_style_fac), use_container_width=True, height=250)
 
@@ -430,7 +439,7 @@ with tab_all_fac:
     for i, fac in enumerate(sorted(fac_tt.keys())):
         with fac_cols[i % 2]:
             st.subheader(fac)
-            grid = fac_tt[fac]
+            grid = _pad_grid(fac_tt[fac])
             df   = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
             st.dataframe(df.style.map(_style_fac), use_container_width=True, height=230)
 
@@ -449,8 +458,8 @@ if prev_result and prev_result.get("timetables"):
         )
         diff_sec = st.selectbox("Compare section", diff_sec_options, key="diff_sec")
 
-        new_grid = timetables.get(diff_sec, [[""] * 7] * 5)
-        old_grid = prev_result["timetables"].get(diff_sec, [[""] * 7] * 5)
+        new_grid = _pad_grid(timetables.get(diff_sec, [[""] * 8] * 5))
+        old_grid = _pad_grid(prev_result["timetables"].get(diff_sec, [[""] * 8] * 5))
 
         new_df = pd.DataFrame(new_grid, index=DAYS, columns=SLOTS)
         old_df = pd.DataFrame(old_grid, index=DAYS, columns=SLOTS)
