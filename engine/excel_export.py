@@ -76,10 +76,10 @@ def _cell_fill(raw: str, row_idx: int) -> PatternFill:
 
 
 def _write_grid(ws, title: str, grid: list, header_fill: PatternFill):
-    """Write a 5-day x 7-slot timetable grid into worksheet *ws*.
+    """Write a 5-day x 8-slot timetable grid into worksheet *ws*.
 
     Layout:
-        Row 1  -- merged title (A1:H1)
+        Row 1  -- merged title (A1:I1)
         Row 2  -- header: Day | S1 | S2 | ... | S7
         Rows 3-7 -- data rows (one per day)
     """
@@ -153,9 +153,9 @@ def create_timetables_excel(
     Parameters
     ----------
     section_timetables : dict
-        {section_name: 5x7 grid of cell strings}
+        {section_name: 5x8 grid of cell strings}
     faculty_timetables : dict, optional
-        {faculty_name: 5x7 grid of cell strings}
+        {faculty_name: 5x8 grid of cell strings}
     academic_year : str, optional
         Appended to sheet titles, e.g. "2025-26".
 

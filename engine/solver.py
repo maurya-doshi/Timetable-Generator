@@ -835,8 +835,8 @@ def build_and_solve(
     -------
     dict with keys:
         status              : "OPTIMAL" | "FEASIBLE" | "INFEASIBLE" | "UNKNOWN" | "MODEL_INVALID"
-        timetables          : {section: 5x7 grid}
-        faculty_timetables  : {faculty: 5x7 grid}
+        timetables          : {section: 5x8 grid}
+        faculty_timetables  : {faculty: 5x8 grid}
         workload            : {faculty: {scheduled, cap, designation, pct}}
         stats               : {solve_time, branches, conflicts, variables, constraints}
         errors              : list of error strings
