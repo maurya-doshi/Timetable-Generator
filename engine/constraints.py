@@ -421,93 +421,131 @@ def add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments):
 
 
 # ===================================================================
-# H6 — OE concurrency (all sections take each OE at the same time)
+# H1.8 — HOD constraint: No first slot (S1, 9:00 AM) across the week
+# ===================================================================
+def add_hod_no_first_slot(model, x1, x2, co_fac, faculty_assignments, hod_name):
+    """
+    HARD constraint: The Head of Department (HOD) is not assigned any
+    classes in Slot 1 (t=0, 9:00 - 9:55 AM) on any day (Mon-Fri).
+    This covers both primary lectures/blocks and co-faculty practical duties.
+    """
+    if not hod_name or str(hod_name).strip().lower() in ("none", ""):
+        return
+
+    hod_clean = str(hod_name).strip().lower()
+
+    # Primary lecture & block assignments
+    for fac, assigns in faculty_assignments.items():
+        if fac.strip().lower() == hod_clean:
+            for sec, cc in assigns:
+                for d in range(NUM_DAYS):
+                    # 1-slot lecture at t=0 (Slot 1)
+                    if (sec, cc, d, 0) in x1:
+                        model.Add(x1[(sec, cc, d, 0)] == 0)
+                    # 2-slot block starting at t=0 (covers Slot 1 and Slot 2)
+                    for etype in ("T", "P"):
+                        if (sec, cc, etype, d, 0) in x2:
+                            model.Add(x2[(sec, cc, etype, d, 0)] == 0)
+
+    # Co-faculty duties at t=0 (Slot 1)
+    for (fac, sec, cc, d, t_start), var in co_fac.items():
+        if fac.strip().lower() == hod_clean and t_start == 0:
+            model.Add(var == 0)
+
+
+# ===================================================================
+# H6 — OE concurrency (locked to S5 Mon/Tue/Wed for 6th and 7th sem)
 # ===================================================================
 def add_oe_concurrency(model, section_courses, oe_course_codes, x1_keys_by_sec_cc):
     """
-    Ensure all sections of the same semester take their OE lectures concurrently.
-    The solver freely picks which (day, slot) combinations to use — no fixed slot.
-    Shared BoolVars guarantee that if section 5A has an OE lecture on Monday S2,
-    then 5B/5C/5D must also have it on Monday S2.
-
-    x1_keys_by_sec_cc: precomputed dict (sec, cc) → list of (d, t, var).
+    Lock OE courses to S5 (slot 5) on Monday, Tuesday, and Wednesday for 6th/7th sem sections.
+    All relevant 6th & 7th semester sections take OEs concurrently within
+    those compulsory slots. Non-target slots are zeroed out.
     """
+    target_set = {(0, 5), (1, 5), (2, 5)}  # Mon/Tue/Wed at S5 (1:45 - 2:40)
+
     for cc in oe_course_codes:
+        relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
+        if not relevant_secs:
+            continue
+
+        # Force all non-target slots to 0, and target slots to 1
+        for sec in relevant_secs:
+            for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
+                if (d, t) in target_set:
+                    model.Add(var == 1)
+                else:
+                    model.Add(var == 0)
+
+
+# ===================================================================
+# H7 — AEC concurrency (common across all sections of each sem, anytime)
+# ===================================================================
+def add_aec_concurrency(model, section_courses, aec_course_codes, x1_keys_by_sec_cc):
+    """
+    Ensure all sections of the same semester take their AEC lectures concurrently
+    for 3rd, 4th, 5th, 6th, and 7th sem.
+    The solver freely picks which (day, slot) combinations to use — can be anytime.
+    Shared BoolVars guarantee that if one section has AEC at a slot, all sections
+    in that semester take AEC at that exact slot.
+    """
+    for cc in aec_course_codes:
         relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
         if len(relevant_secs) <= 1:
             continue
 
-        # Only consider (d,t) pairs available to ALL sections
+        # Only consider (d, t) pairs available to ALL relevant sections
         dt_per_sec = {}
         for sec in relevant_secs:
-            sec_dts = set()
-            for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), []):
-                sec_dts.add((d, t))
+            sec_dts = {(d, t) for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), [])}
             dt_per_sec[sec] = sec_dts
 
         common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
         if not common_dt:
             continue
 
-        # Create shared BoolVars — solver picks which slots to use
-        shared = {(d, t): model.NewBoolVar(f"oe_{cc}_d{d}_t{t}") for (d, t) in common_dt}
+        shared = {(d, t): model.NewBoolVar(f"aec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
 
-        # Force each section's x1 vars to match the shared schedule
         for sec in relevant_secs:
             for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
                 if (d, t) in shared:
                     model.Add(var == shared[(d, t)])
                 else:
-                    model.Add(var == 0)  # slot not common to all sections
-
-
-# ===================================================================
-# H7 — AEC concurrency (locked to S5 Mon/Tue/Wed)
-# ===================================================================
-def add_aec_concurrency(model, section_courses, aec_course_codes, sections_3rd, sections_4th,
-                         x1_keys_by_sec_cc):
-    """
-    Lock AEC courses to S5 (slot 5) on Monday, Tuesday, and Wednesday.
-    All relevant 3rd & 4th semester sections take AECs concurrently within
-    those fixed slots. Non-target slots are zeroed out; shared BoolVars
-    ensure cross-section concurrency within the target window.
-
-    x1_keys_by_sec_cc: precomputed dict (sec, cc) → list of (d, t, var).
-    """
-    target_set = {(0, 5), (1, 5), (2, 5)}  # Mon/Tue/Wed at S5
-    aec_sections = sections_3rd + sections_4th
-
-    for cc in aec_course_codes:
-        relevant = [s for s in aec_sections if cc in section_courses.get(s, [])]
-        if not relevant:
-            continue
-
-        # Force all non-target slots to 0 — AECs can only be at S5 Mon/Tue/Wed
-        for sec in relevant:
-            for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
-                if (d, t) not in target_set:
                     model.Add(var == 0)
 
-        # If only 1 section, slot restriction above is sufficient
-        if len(relevant) <= 1:
+
+# ===================================================================
+# H7.5 — PEC concurrency (common across all sections of each sem, anytime)
+# ===================================================================
+def add_pec_concurrency(model, section_courses, pec_course_codes, x1_keys_by_sec_cc):
+    """
+    Ensure all sections of the same semester take their Professional Elective (PEC)
+    lectures concurrently for 5th, 6th, and 7th sem.
+    The solver freely picks which (day, slot) combinations to use — can be anytime.
+    Shared BoolVars guarantee that all sections in that semester take PEC simultaneously.
+    """
+    for cc in pec_course_codes:
+        relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
+        if len(relevant_secs) <= 1:
             continue
 
-        # Shared BoolVars for target slots — forces all sections to agree
-        valid_targets = set()
-        for sec in relevant:
-            for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), []):
-                if (d, t) in target_set:
-                    valid_targets.add((d, t))
+        dt_per_sec = {}
+        for sec in relevant_secs:
+            sec_dts = {(d, t) for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), [])}
+            dt_per_sec[sec] = sec_dts
 
-        if not valid_targets:
+        common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
+        if not common_dt:
             continue
 
-        shared = {(d, t): model.NewBoolVar(f"aec_{cc}_d{d}_t{t}") for (d, t) in valid_targets}
+        shared = {(d, t): model.NewBoolVar(f"pec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
 
-        for sec in relevant:
+        for sec in relevant_secs:
             for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
                 if (d, t) in shared:
                     model.Add(var == shared[(d, t)])
+                else:
+                    model.Add(var == 0)
 
 
 # ===================================================================

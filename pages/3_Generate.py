@@ -136,8 +136,11 @@ constraints_doc = db["constraints"].find_one({"type": "special_subjects"})
 if constraints_doc:
     oe_cnt    = len(constraints_doc.get("open_electives", []))
     aec_cnt   = len(constraints_doc.get("aec", []))
+    pec_cnt   = len(constraints_doc.get("pec", []))
     maths_cnt = len([m for m in constraints_doc.get("maths_slots", []) if m.get("Class")])
-    st.success(f"✅ **Constraints:** {oe_cnt} OE, {aec_cnt} AEC, {maths_cnt} maths locks")
+    hod_name  = constraints_doc.get("hod")
+    hod_str   = f", HOD: {hod_name}" if hod_name else ""
+    st.success(f"✅ **Constraints:** {oe_cnt} OE, {aec_cnt} AEC, {pec_cnt} PEC, {maths_cnt} maths locks{hod_str}")
 else:
     st.warning("⚠️ **Constraints:** Not configured — solver will run without special subject rules.")
 

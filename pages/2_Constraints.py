@@ -52,46 +52,87 @@ if default_pg_core not in pg_course_names:
 default_pg_pe = current_config.get("pg_shared_pe", [])
 default_pg_pe = [x for x in default_pg_pe if x in pg_course_names]
 
-# --- Auto-calculate AEC and OE from courses data ---
-computed_oe_data = [c for c in courses 
-               if str(c.get("semester")).strip() in ["5", "6", "7"] 
-               and str(c.get("elective", "No")).lower() in ["yes", "y", "true"] 
-               and str(c.get("ug_pg", "UG")).upper() == "UG"]
+# --- Display HOD status ---
+current_hod = current_config.get("hod")
+if current_hod:
+    st.info(f"🏛️ **Department Head (HOD):** `{current_hod}` — Automatically barred from Slot 1 (9:00 AM) across all weekdays (configured in **Input Data**).")
 
+# --- Auto-calculate AEC, OE, and PEC from courses data ---
+computed_aec_data = [
+    c for c in courses
+    if str(c.get("semester")).strip() in ["3", "4", "5", "6", "7"]
+    and (
+        str(c.get("aec", "No")).lower() in ["yes", "y", "true"]
+        or "AEC" in str(c.get("course_code", "")).upper()
+        or "AEC" in str(c.get("course_name", "")).upper()
+    )
+    and str(c.get("ug_pg", "UG")).upper() == "UG"
+]
+computed_aec = [c.get("course_name", c.get("course_code")) for c in computed_aec_data]
+computed_aec_display = [f"{c.get('course_name')} (Sem {c.get('semester')})" for c in computed_aec_data]
+
+computed_oe_data = [
+    c for c in courses
+    if str(c.get("semester")).strip() in ["6", "7"]
+    and (
+        "OE" in str(c.get("course_code", "")).upper()
+        or "OPEN ELECTIVE" in str(c.get("course_name", "")).upper()
+        or "CSOE" in str(c.get("course_code", "")).upper()
+    )
+    and str(c.get("ug_pg", "UG")).upper() == "UG"
+    and c not in computed_aec_data
+]
 computed_oe = [c.get("course_name", c.get("course_code")) for c in computed_oe_data]
 computed_oe_display = [f"{c.get('course_name')} (Sem {c.get('semester')})" for c in computed_oe_data]
 
-computed_aec_data = [c for c in courses 
-                if str(c.get("semester")).strip() in ["3", "4"]
-                and str(c.get("aec", "No")).lower() in ["yes", "y", "true"]]
-
-computed_aec = [c.get("course_name", c.get("course_code")) for c in computed_aec_data]
-computed_aec_display = [f"{c.get('course_name')} (Sem {c.get('semester')})" for c in computed_aec_data]
+computed_pec_data = [
+    c for c in courses
+    if str(c.get("semester")).strip() in ["5", "6", "7"]
+    and (
+        str(c.get("elective", "No")).lower() in ["yes", "y", "true"]
+        or "CSE" in str(c.get("course_code", "")).upper()
+        or "PEC" in str(c.get("course_code", "")).upper()
+        or "PE" in str(c.get("course_code", "")).upper()
+        or "PROFESSIONAL ELECTIVE" in str(c.get("course_name", "")).upper()
+    )
+    and str(c.get("ug_pg", "UG")).upper() == "UG"
+    and c not in computed_aec_data
+    and c not in computed_oe_data
+]
+computed_pec = [c.get("course_name", c.get("course_code")) for c in computed_pec_data]
+computed_pec_display = [f"{c.get('course_name')} (Sem {c.get('semester')})" for c in computed_pec_data]
 
 st.header("1. Subject Constraints")
 ug_tab, pg_tab = st.tabs(["🎓 Undergraduate (UG)", "🏫 Postgraduate (PG)"])
 
 with ug_tab:
     st.subheader("Automated UG Subject Identifiers")
-    st.markdown("We have automatically identified your Open Electives and AEC subjects from the Excel file.")
+    st.markdown("We have automatically identified your Open Electives (OE), Ability Enhancement Courses (AEC), and Professional Electives (PEC).")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.info("**Open Electives (OE)**\n\n*(Scheduled concurrently on **Monday, Tuesday, Wednesday, 5th Slot** for 5th/6th/7th Sem)*")
+        st.info("**Open Electives (OE)**\n\n*(Compulsory on **Monday, Tuesday, Wednesday, 5th Slot** for 6th/7th Sem)*")
         if computed_oe_display:
             st.dataframe(pd.DataFrame({"Course Name & Semester": computed_oe_display}), hide_index=True)
         else:
             st.write("None detected")
 
     with col2:
-        st.info("**Ability Enhancement Course (AEC)**\n\n*(Scheduled at the **same time** for all 3rd & 4th Sem sections)*")
+        st.info("**Ability Enhancement Course (AEC)**\n\n*(Common across sections for each semester, **can be anytime** for 3rd–7th Sem)*")
         if computed_aec_display:
             st.dataframe(pd.DataFrame({"Course Name & Semester": computed_aec_display}), hide_index=True)
         else:
             st.write("None detected")
 
+    with col3:
+        st.info("**Professional Electives (PEC)**\n\n*(Common across sections for each semester, **can be anytime** for 5th–7th Sem)*")
+        if computed_pec_display:
+            st.dataframe(pd.DataFrame({"Course Name & Semester": computed_pec_display}), hide_index=True)
+        else:
+            st.write("None detected")
+
     st.write("---")
-    st.markdown("**Are the automatically identified AEC and OE subjects correct?**")
+    st.markdown("**Are the automatically identified AEC, OE, and PEC subjects correct?**")
     verify_choice = st.radio(
         label="Verify Automation",
         options=["🟢 Yes, use these automatically identified subjects", "🔴 No, let me select manually"],
@@ -102,13 +143,16 @@ with ug_tab:
     if "Yes" in verify_choice:
         selected_oes = computed_oe
         selected_aec = computed_aec
+        selected_pecs = computed_pec
     else:
         st.warning("Manual Override Enabled. Please select the correct UG subjects below:")
-        col_a, col_b = st.columns(2)
+        col_a, col_b, col_c = st.columns(3)
         with col_a:
-            selected_oes = st.multiselect("Open Elective Subjects", options=ug_course_names, default=[x for x in computed_oe if x in ug_course_names])
+            selected_oes = st.multiselect("Open Elective Subjects (6th/7th)", options=ug_course_names, default=[x for x in computed_oe if x in ug_course_names])
         with col_b:
-            selected_aec = st.multiselect("AEC Subjects", options=ug_course_names, default=[x for x in computed_aec if x in ug_course_names])
+            selected_aec = st.multiselect("AEC Subjects (3rd-7th)", options=ug_course_names, default=[x for x in computed_aec if x in ug_course_names])
+        with col_c:
+            selected_pecs = st.multiselect("Professional Electives PEC (5th-7th)", options=ug_course_names, default=[x for x in computed_pec if x in ug_course_names])
 
 with pg_tab:
     st.subheader("PG Shared Classes (SP-1 & SP-2)")
@@ -344,6 +388,8 @@ if st.button("💾 Save Constraints", type="primary"):
         "type": "special_subjects",
         "open_electives": selected_oes,
         "aec": selected_aec,
+        "pec": selected_pecs,
+        "hod": current_config.get("hod"),
         "pg_shared_core": shared_core if shared_core != "None" else None,
         "maths_slots": math_slots_list,
         "cse_lab_allocations": lab_alloc_list,

@@ -299,6 +299,43 @@ if uploaded_file is not None:
         st.success("✅ **Cross-validation:** All faculty course codes match the Courses sheet.")
 
     # -----------------------------------------------------------------------
+    # Head of Department (HOD) Designation
+    # -----------------------------------------------------------------------
+    st.subheader("🏛️ Head of Department (HOD) Designation")
+    st.markdown(
+        "Designate the **Head of Department (HOD)**. The timetable solver enforces a strict constraint "
+        "ensuring that the HOD is **never assigned any classes during the first slot of the day** "
+        "(Slot 1: 9:00 AM – 9:55 AM) to accommodate departmental management and administrative duties."
+    )
+
+    db = get_db()
+    c_doc = db["constraints"].find_one({"type": "special_subjects"}) or {}
+    saved_hod = c_doc.get("hod", "")
+
+    fac_names_list = [r["name"] for r in faculty_records]
+    hod_options = ["None"] + fac_names_list
+
+    default_idx = 0
+    if saved_hod in fac_names_list:
+        default_idx = hod_options.index(saved_hod)
+    else:
+        for idx, r in enumerate(faculty_records):
+            desig_l = str(r.get("designation", "")).lower()
+            if "head" in desig_l or "hod" in desig_l:
+                default_idx = idx + 1
+                break
+
+    selected_hod = st.selectbox(
+        "Select Department HOD:",
+        options=hod_options,
+        index=default_idx,
+        help="The chosen faculty member will have Slot 1 (9:00 AM) kept free across all weekdays.",
+        key="upload_hod_select"
+    )
+    if selected_hod != "None":
+        st.info(f"📌 **{selected_hod}** is designated as HOD. Slot 1 (9:00 AM) will be blocked for this faculty member.")
+
+    # -----------------------------------------------------------------------
     # Display Faculty Assignments separately
     # -----------------------------------------------------------------------
     st.header("📚 Faculty Assignments")
@@ -313,7 +350,8 @@ if uploaded_file is not None:
         for rec in faculty_records:
             cols = st.columns([0.5, 2, 1.5, 3, 2])
             cols[0].write(rec["sl_no"] if rec["sl_no"] else "—")
-            cols[1].write(rec["name"])
+            is_hod_badge = " 🏛️ *(HOD)*" if (selected_hod != "None" and rec["name"] == selected_hod) else ""
+            cols[1].write(f"{rec['name']}{is_hod_badge}")
             cols[2].write(rec["designation"])
             subj_str = ", ".join(f"{s['code']} ({s['semester']})" for s in rec["subjects"]) if rec["subjects"] else "—"
             lab_str = ", ".join(f"{l['code']} ({l['semester']})" for l in rec["labs"]) if rec["labs"] else "—"
@@ -331,6 +369,7 @@ if uploaded_file is not None:
             col = db[collection_name]
             docs = []
             for rec in faculty_records:
+                is_this_hod = (selected_hod != "None" and rec["name"] == selected_hod)
                 docs.append({
                     "sl_no": rec["sl_no"],
                     "name": rec["name"],
@@ -338,11 +377,20 @@ if uploaded_file is not None:
                     "subjects": rec["subjects"],
                     "labs": rec["labs"],
                     "semester": semester.lower(),
+                    "is_hod": is_this_hod,
                 })
             col.delete_many({})
             if docs:
                 col.insert_many(docs)
-            st.success(f"✅ Saved {len(docs)} faculty records to `{collection_name}`.")
+
+            # Persist HOD in constraints doc as well
+            hod_val = selected_hod if selected_hod != "None" else None
+            db["constraints"].update_one(
+                {"type": "special_subjects"},
+                {"$set": {"hod": hod_val}},
+                upsert=True
+            )
+            st.success(f"✅ Saved {len(docs)} faculty records to `{collection_name}` and set HOD to `{selected_hod}`.")
             st.rerun()
     with col_fac_delete:
         if st.button("🗑️ Delete All Faculty Records", type="secondary", key="del_fac"):
@@ -422,4 +470,93 @@ if uploaded_file is not None:
         st.dataframe(courses_existing)
 
 else:
-    st.info("📂 Please upload an Excel file to begin.")
+    db = get_db()
+    collection_name = f"faculty_{semester.lower()}"
+    fac_col = db[collection_name]
+    existing_faculty = list(fac_col.find({}, {"_id": 0}))
+
+    if existing_faculty:
+        st.info(f"📂 Showing existing records from database for **{semester}** semester. Upload an Excel file above if you wish to overwrite them.")
+
+        # --- HOD Management for Existing Records ---
+        st.header("🏛️ Head of Department (HOD) Designation")
+        st.markdown(
+            "Designate the **Head of Department (HOD)**. The solver enforces a strict constraint ensuring "
+            "that the HOD is **never assigned any morning classes** (Slot 1: 9:00 AM – 9:55 AM) "
+            "on any weekday."
+        )
+
+        c_doc = db["constraints"].find_one({"type": "special_subjects"}) or {}
+        saved_hod = c_doc.get("hod", "")
+
+        db_fac_names = [f["name"] for f in existing_faculty]
+        hod_options = ["None"] + db_fac_names
+
+        default_idx = 0
+        if saved_hod in db_fac_names:
+            default_idx = hod_options.index(saved_hod)
+        else:
+            for idx, f in enumerate(existing_faculty):
+                desig_l = str(f.get("designation", "")).lower()
+                if f.get("is_hod") or "head" in desig_l or "hod" in desig_l:
+                    default_idx = idx + 1
+                    break
+
+        col_hod1, col_hod2 = st.columns([3, 1])
+        with col_hod1:
+            chosen_hod = st.selectbox(
+                "Select Department HOD from Faculty List:",
+                options=hod_options,
+                index=default_idx,
+                key="db_hod_select"
+            )
+        with col_hod2:
+            st.write("")
+            st.write("")
+            if st.button("💾 Save HOD Designation", type="primary", key="save_db_hod"):
+                hod_val = chosen_hod if chosen_hod != "None" else None
+                db["constraints"].update_one(
+                    {"type": "special_subjects"},
+                    {"$set": {"hod": hod_val}},
+                    upsert=True
+                )
+                fac_col.update_many({}, {"$set": {"is_hod": False}})
+                if hod_val:
+                    fac_col.update_one({"name": hod_val}, {"$set": {"is_hod": True}})
+                st.success(f"✅ HOD updated to **{chosen_hod}**. Slot 1 (9:00 AM) will be kept free in timetable generation.")
+                st.rerun()
+
+        if chosen_hod != "None":
+            st.success(f"📌 Current HOD: **{chosen_hod}** — Slot 1 (9:00 AM) is barred across all weekdays.")
+        else:
+            st.warning("⚠️ No faculty member is currently designated as HOD.")
+
+        st.divider()
+
+        # Display existing faculty preview
+        st.header("📚 Current Faculty Roster")
+        header_cols = st.columns([0.5, 2, 1.5, 3, 2])
+        header_cols[0].markdown("**Sl.**")
+        header_cols[1].markdown("**Faculty Name**")
+        header_cols[2].markdown("**Designation**")
+        header_cols[3].markdown("**Subjects (Semester)**")
+        header_cols[4].markdown("**Labs (Semester)**")
+        for rec in existing_faculty:
+            cols = st.columns([0.5, 2, 1.5, 3, 2])
+            cols[0].write(rec.get("sl_no") if rec.get("sl_no") else "—")
+            is_hod = (rec.get("is_hod") or rec.get("name") == saved_hod)
+            badge = " 🏛️ *(HOD)*" if is_hod else ""
+            cols[1].write(f"{rec.get('name')}{badge}")
+            cols[2].write(rec.get("designation", "—"))
+            subj_str = ", ".join(f"{s['code']} ({s['semester']})" for s in rec.get("subjects", [])) if rec.get("subjects") else "—"
+            lab_str = ", ".join(f"{l['code']} ({l['semester']})" for l in rec.get("labs", [])) if rec.get("labs") else "—"
+            cols[3].write(subj_str)
+            cols[4].write(lab_str)
+
+        st.divider()
+        st.header("📖 Current Courses")
+        courses_existing = list(db["courses"].find({}, {"_id": 0}))
+        if courses_existing:
+            st.dataframe(courses_existing, use_container_width=True)
+    else:
+        st.info("📂 Please upload an Excel file to begin.")

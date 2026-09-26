@@ -30,11 +30,13 @@ from engine.constraints import (
     add_no_student_gaps,
     add_oe_concurrency,
     add_aec_concurrency,
+    add_pec_concurrency,
     add_pg_shared,
     add_maths_locks,
     add_cse_lab_locks,
     add_spread_constraint,
     add_first_slot_constraint,
+    add_hod_no_first_slot,
     add_co_faculty_logic,
     add_max_workload,
     add_lab_room_assignment,
@@ -291,25 +293,33 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
                 fac_name = fac_list[j % len(fac_list)]
                 faculty_assignments.setdefault(fac_name, []).append((sec, code))
 
-    # --- OE / AEC / PG codes ---
+    # --- OE / AEC / PEC / PG codes ---
     name_to_code = {}
     for code, info in course_info.items():
         name_to_code[info.get("course_name", "")] = code
 
-    # Auto-detect AEC and OE courses directly from Course info sheets to align with 
-    # the frontend auto-detect rules and protect against stale database documents.
     auto_oe_codes = set()
     auto_aec_codes = set()
+    auto_pec_codes = set()
+
     for code, info in course_info.items():
         ug_pg = str(info.get("ug_pg", "UG")).strip().upper()
         sem = str(info.get("semester", "")).strip()
         is_elective = str(info.get("elective", "No")).lower() in ("yes", "y", "true")
         is_aec = str(info.get("aec", "No")).lower() in ("yes", "y", "true")
+        cname = str(info.get("course_name", "")).upper()
+        code_u = code.upper()
+
         if ug_pg == "UG":
-            if is_aec:
+            # AEC: Semesters 3, 4, 5, 6, 7
+            if (is_aec or "AEC" in code_u or "AEC" in cname) and sem in ("3", "4", "5", "6", "7"):
                 auto_aec_codes.add(code)
-            elif is_elective and sem in ("5", "6", "7"):
+            # OE: Semesters 6, 7 only
+            elif sem in ("6", "7") and ("OE" in code_u or "OPEN ELECTIVE" in cname or "CSOE" in code_u):
                 auto_oe_codes.add(code)
+            # PEC: Semesters 5, 6, 7
+            elif sem in ("5", "6", "7") and (is_elective or "CSE" in code_u or "PEC" in code_u or "PE" in code_u or "PROFESSIONAL ELECTIVE" in cname):
+                auto_pec_codes.add(code)
 
     oe_names  = constraints_doc.get("open_electives", [])
     oe_codes  = set(name_to_code.get(n, n) for n in oe_names)
@@ -319,10 +329,19 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     aec_codes = set(name_to_code.get(n, n) for n in aec_names)
     aec_codes.update(auto_aec_codes)
 
-    # Manual AEC selection takes priority: if a course is tagged as AEC
-    # (either via Excel column or via the Constraints page), it must NOT
-    # also be treated as an Open Elective (which would lock it to Slot 5).
+    pec_names = constraints_doc.get("pec", [])
+    pec_codes = set(name_to_code.get(n, n) for n in pec_names)
+    pec_codes.update(auto_pec_codes)
+
+    # Disjunction rules:
+    # 1. AEC takes priority:
     oe_codes -= aec_codes
+    pec_codes -= aec_codes
+    # 2. OE is 6th & 7th sem only:
+    oe_codes = {c for c in oe_codes if str(course_info.get(c, {}).get("semester", "")).strip() in ("6", "7")}
+    # 3. PEC is 5th, 6th, 7th sem only:
+    pec_codes -= oe_codes
+    pec_codes = {c for c in pec_codes if str(course_info.get(c, {}).get("semester", "")).strip() in ("5", "6", "7")}
 
     # Track which specific elective course a faculty was assigned to before grouping
     faculty_elective_subcourse: dict[tuple[str, str], str] = {}
@@ -379,6 +398,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
 
     oe_codes  = group_parallel_electives(oe_codes,  "OE")
     aec_codes = group_parallel_electives(aec_codes, "AEC")
+    pec_codes = group_parallel_electives(pec_codes, "PEC")
 
     pg_core_name = constraints_doc.get("pg_shared_core")
     pg_core_code = name_to_code.get(pg_core_name, pg_core_name) if pg_core_name else None
@@ -395,12 +415,23 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     sections_4th = [s for s in section_courses if s.startswith("4")]
     pg_sections  = [s for s in section_courses if "PG" in s or "SP" in s]
 
+    # Head of Department (HOD)
+    hod_name = constraints_doc.get("hod")
+    if not hod_name:
+        for fac in faculty_raw:
+            desig = str(fac.get("designation", "")).lower()
+            if fac.get("is_hod") or "head" in desig or "hod" in desig:
+                hod_name = fac.get("name")
+                break
+
     return {
         "section_courses":    section_courses,
         "faculty_assignments": faculty_assignments,
         "faculty_designations": faculty_designations,
+        "hod_name":           hod_name,
         "oe_codes":           oe_codes,
         "aec_codes":          aec_codes,
+        "pec_codes":          pec_codes,
         "pg_core_code":       pg_core_code,
         "pg_pe_codes":        pg_pe_codes,
         "maths_slots":        maths_slots,
@@ -708,8 +739,8 @@ def _generate_infeasibility_hints(semester: str, section_map: dict | None, hint_
 
     _ALL_OPTIONAL = {
         "no_student_gaps", "morning_first", "no_empty_days",
-        "friday_half_day", "spread", "first_slot",
-        "oe", "aec", "pg_shared", "maths", "cse_labs", "lab_rooms",
+        "friday_half_day", "spread", "first_slot", "hod",
+        "oe", "aec", "pec", "pg_shared", "maths", "cse_labs", "lab_rooms",
         "workload",
     }
 
@@ -747,7 +778,7 @@ def _generate_infeasibility_hints(semester: str, section_map: dict | None, hint_
         )
         return hints
 
-    # Pass 3: Add special subject constraints (OE/AEC/Maths/Labs) but no quality constraints
+    # Pass 3: Add special subject constraints (OE/AEC/PEC/Maths/Labs) but no quality constraints
     _QUALITY = {"no_student_gaps", "morning_first", "no_empty_days", "spread", "first_slot"}
     r3 = build_and_solve(
         semester=semester, time_limit_seconds=hint_time,
@@ -756,7 +787,7 @@ def _generate_infeasibility_hints(semester: str, section_map: dict | None, hint_
     if r3["status"] in ("INFEASIBLE", "MODEL_INVALID"):
         hints.append(
             "**Root cause:** The **special subject constraints** (OE concurrency, "
-            "AEC concurrency, PG shared classes, Maths locks, or CSE lab blocks) "
+            "AEC concurrency, PEC concurrency, PG shared classes, Maths locks, or CSE lab blocks) "
             "create a conflict."
         )
         hints.append(
@@ -889,7 +920,7 @@ def build_and_solve(
     for fac, assignments in mappings["faculty_assignments"].items():
         seen_courses = set()
         for sec, cc in assignments:
-            is_grouped = cc.startswith("CSOE_") or cc.startswith("CSAEC_") or cc == mappings.get("pg_core_code")
+            is_grouped = cc.startswith("CSOE_") or cc.startswith("CSAEC_") or cc.startswith("CSPEC_") or cc == mappings.get("pg_core_code")
             if is_grouped:
                 if cc in seen_courses:
                     continue
@@ -938,13 +969,19 @@ def build_and_solve(
     if "first_slot" not in skip:
         add_first_slot_constraint(model, section_courses, x1_t0_by_sec_cc, x2_t0_by_sec_cc)
 
+    if "hod" not in skip and mappings.get("hod_name"):
+        add_hod_no_first_slot(model, x1, x2, co_fac,
+                              mappings["faculty_assignments"],
+                              mappings["hod_name"])
+
     if "oe" not in skip and mappings["oe_codes"]:
         add_oe_concurrency(model, section_courses, mappings["oe_codes"], x1_keys_by_sec_cc)
 
     if "aec" not in skip and mappings["aec_codes"]:
-        add_aec_concurrency(model, section_courses, mappings["aec_codes"],
-                            mappings["sections_3rd"], mappings["sections_4th"],
-                            x1_keys_by_sec_cc)
+        add_aec_concurrency(model, section_courses, mappings["aec_codes"], x1_keys_by_sec_cc)
+
+    if "pec" not in skip and mappings.get("pec_codes"):
+        add_pec_concurrency(model, section_courses, mappings["pec_codes"], x1_keys_by_sec_cc)
 
     if "pg_shared" not in skip and mappings["pg_sections"]:
         add_pg_shared(model, section_courses, mappings["pg_sections"],
