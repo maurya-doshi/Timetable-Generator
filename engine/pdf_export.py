@@ -39,8 +39,8 @@ def create_timetables_pdf(
 
     Parameters
     ----------
-    section_timetables : dict  {section: 5x7 grid}
-    faculty_timetables : dict  {faculty: 5x7 grid}, optional
+    section_timetables : dict  {section: 5x8 grid}
+    faculty_timetables : dict  {faculty: 5x8 grid}, optional
     semester           : str   e.g. "Odd" or "Even"  (#13)
     academic_year      : str   e.g. "2025-26"         (#13)
 
@@ -119,7 +119,10 @@ def create_timetables_pdf(
             row = [Paragraph(f"<b>{day_name}</b>", cell_style)]
             day_raws = []
             for t_idx in range(len(SLOTS)):
-                raw = grid[d_idx][t_idx] if grid[d_idx][t_idx] else "—"
+                if d_idx < len(grid) and t_idx < len(grid[d_idx]):
+                    raw = grid[d_idx][t_idx] if grid[d_idx][t_idx] else "—"
+                else:
+                    raw = "—"
                 day_raws.append(raw)
                 cell_text = raw.replace("\n", "<br/>")
                 row.append(Paragraph(cell_text, cell_style))
