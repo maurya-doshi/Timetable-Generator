@@ -921,9 +921,9 @@ def build_and_solve(
 
     x2T_by_sec_cc      = defaultdict(list)
     x2P_by_sec_cc      = defaultdict(list)
-    x2_by_sec_cc       = defaultdict(list)
     x2_by_sec_dt_etype = defaultdict(list)
     x2_t0_by_sec_cc    = defaultdict(list)
+    x2_keys_by_sec_cc  = defaultdict(list)
 
     for (sec, cc, etype, d, t_start), var in x2.items():
         slot_coverage_sec[(sec, d, t_start)].append(var)
@@ -938,6 +938,7 @@ def build_and_solve(
             x2P_by_sec_cc[(sec, cc)].append(var)
         if t_start == 0:
             x2_t0_by_sec_cc[(sec, cc)].append(var)
+        x2_keys_by_sec_cc[(sec, cc)].append((etype, d, t_start, var))
 
     events_by_fac = defaultdict(list)
     for fac, assignments in mappings["faculty_assignments"].items():
@@ -998,13 +999,13 @@ def build_and_solve(
                               mappings["hod_name"])
 
     if "oe" not in skip and mappings["oe_codes"]:
-        add_oe_concurrency(model, section_courses, mappings["oe_codes"], x1_keys_by_sec_cc)
+        add_oe_concurrency(model, section_courses, mappings["oe_codes"], x1_keys_by_sec_cc, x2_keys_by_sec_cc)
 
     if "aec" not in skip and mappings["aec_codes"]:
-        add_aec_concurrency(model, section_courses, mappings["aec_codes"], x1_keys_by_sec_cc)
+        add_aec_concurrency(model, section_courses, mappings["aec_codes"], x1_keys_by_sec_cc, x2_keys_by_sec_cc)
 
     if "pec" not in skip and mappings.get("pec_codes"):
-        add_pec_concurrency(model, section_courses, mappings["pec_codes"], x1_keys_by_sec_cc)
+        add_pec_concurrency(model, section_courses, mappings["pec_codes"], x1_keys_by_sec_cc, x2_keys_by_sec_cc)
 
     if "pg_shared" not in skip and mappings["pg_sections"]:
         add_pg_shared(model, section_courses, mappings["pg_sections"],

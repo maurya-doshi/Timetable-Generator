@@ -456,12 +456,16 @@ def add_hod_no_first_slot(model, x1, x2, co_fac, faculty_assignments, hod_name):
 # ===================================================================
 # H6 — OE concurrency (locked to S5 Mon/Tue/Wed for 6th and 7th sem)
 # ===================================================================
-def add_oe_concurrency(model, section_courses, oe_course_codes, x1_keys_by_sec_cc):
+def add_oe_concurrency(model, section_courses, oe_course_codes, x1_keys_by_sec_cc, x2_keys_by_sec_cc=None):
     """
     Lock OE courses to S5 (slot 5) on Monday, Tuesday, and Wednesday for 6th/7th sem sections.
     All relevant 6th & 7th semester sections take OEs concurrently within
     those compulsory slots. Non-target slots are zeroed out.
+    If an OE has a lab component (x2), sync the lab across sections.
     """
+    if x2_keys_by_sec_cc is None:
+        x2_keys_by_sec_cc = {}
+        
     target_set = {(0, 5), (1, 5), (2, 5)}  # Mon/Tue/Wed at S5 (1:45 - 2:40)
 
     for cc in oe_course_codes:
@@ -469,19 +473,36 @@ def add_oe_concurrency(model, section_courses, oe_course_codes, x1_keys_by_sec_c
         if not relevant_secs:
             continue
 
-        # Force all non-target slots to 0, and target slots to 1
+        # 1. Sync lectures (x1) and lock to target_set
         for sec in relevant_secs:
             for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
                 if (d, t) in target_set:
                     model.Add(var == 1)
                 else:
                     model.Add(var == 0)
+                    
+        # 2. Sync practicals/tutorials (x2) across sections
+        if len(relevant_secs) > 1:
+            dt_etype_per_sec = {}
+            for sec in relevant_secs:
+                sec_dts = {(etype, d, t) for etype, d, t, _ in x2_keys_by_sec_cc.get((sec, cc), [])}
+                dt_etype_per_sec[sec] = sec_dts
+                
+            common_blocks = set.intersection(*dt_etype_per_sec.values()) if dt_etype_per_sec else set()
+            if common_blocks:
+                shared_x2 = {(etype, d, t): model.NewBoolVar(f"oe_{cc}_x2_{etype}_d{d}_t{t}") for (etype, d, t) in common_blocks}
+                for sec in relevant_secs:
+                    for etype, d, t, var in x2_keys_by_sec_cc.get((sec, cc), []):
+                        if (etype, d, t) in shared_x2:
+                            model.Add(var == shared_x2[(etype, d, t)])
+                        else:
+                            model.Add(var == 0)
 
 
 # ===================================================================
 # H7 — AEC concurrency (common across all sections of each sem, anytime)
 # ===================================================================
-def add_aec_concurrency(model, section_courses, aec_course_codes, x1_keys_by_sec_cc):
+def add_aec_concurrency(model, section_courses, aec_course_codes, x1_keys_by_sec_cc, x2_keys_by_sec_cc=None):
     """
     Ensure all sections of the same semester take their AEC lectures concurrently
     for 3rd, 4th, 5th, 6th, and 7th sem.
@@ -489,63 +510,96 @@ def add_aec_concurrency(model, section_courses, aec_course_codes, x1_keys_by_sec
     Shared BoolVars guarantee that if one section has AEC at a slot, all sections
     in that semester take AEC at that exact slot.
     """
+    if x2_keys_by_sec_cc is None:
+        x2_keys_by_sec_cc = {}
+        
     for cc in aec_course_codes:
         relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
         if len(relevant_secs) <= 1:
             continue
 
-        # Only consider (d, t) pairs available to ALL relevant sections
+        # 1. Sync lectures
         dt_per_sec = {}
         for sec in relevant_secs:
             sec_dts = {(d, t) for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), [])}
             dt_per_sec[sec] = sec_dts
 
         common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
-        if not common_dt:
-            continue
-
-        shared = {(d, t): model.NewBoolVar(f"aec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
-
+        if common_dt:
+            shared = {(d, t): model.NewBoolVar(f"aec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
+            for sec in relevant_secs:
+                for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
+                    if (d, t) in shared:
+                        model.Add(var == shared[(d, t)])
+                    else:
+                        model.Add(var == 0)
+                        
+        # 2. Sync practicals/tutorials
+        dt_etype_per_sec = {}
         for sec in relevant_secs:
-            for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
-                if (d, t) in shared:
-                    model.Add(var == shared[(d, t)])
-                else:
-                    model.Add(var == 0)
+            sec_dts = {(etype, d, t) for etype, d, t, _ in x2_keys_by_sec_cc.get((sec, cc), [])}
+            dt_etype_per_sec[sec] = sec_dts
+            
+        common_blocks = set.intersection(*dt_etype_per_sec.values()) if dt_etype_per_sec else set()
+        if common_blocks:
+            shared_x2 = {(etype, d, t): model.NewBoolVar(f"aec_{cc}_x2_{etype}_d{d}_t{t}") for (etype, d, t) in common_blocks}
+            for sec in relevant_secs:
+                for etype, d, t, var in x2_keys_by_sec_cc.get((sec, cc), []):
+                    if (etype, d, t) in shared_x2:
+                        model.Add(var == shared_x2[(etype, d, t)])
+                    else:
+                        model.Add(var == 0)
 
 
 # ===================================================================
 # H7.5 — PEC concurrency (common across all sections of each sem, anytime)
 # ===================================================================
-def add_pec_concurrency(model, section_courses, pec_course_codes, x1_keys_by_sec_cc):
+def add_pec_concurrency(model, section_courses, pec_course_codes, x1_keys_by_sec_cc, x2_keys_by_sec_cc=None):
     """
     Ensure all sections of the same semester take their Professional Elective (PEC)
-    lectures concurrently for 5th, 6th, and 7th sem.
+    lectures and labs concurrently for 5th, 6th, and 7th sem.
     The solver freely picks which (day, slot) combinations to use — can be anytime.
     Shared BoolVars guarantee that all sections in that semester take PEC simultaneously.
     """
+    if x2_keys_by_sec_cc is None:
+        x2_keys_by_sec_cc = {}
+        
     for cc in pec_course_codes:
         relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
         if len(relevant_secs) <= 1:
             continue
 
+        # 1. Sync lectures
         dt_per_sec = {}
         for sec in relevant_secs:
             sec_dts = {(d, t) for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), [])}
             dt_per_sec[sec] = sec_dts
 
         common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
-        if not common_dt:
-            continue
+        if common_dt:
+            shared = {(d, t): model.NewBoolVar(f"pec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
+            for sec in relevant_secs:
+                for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
+                    if (d, t) in shared:
+                        model.Add(var == shared[(d, t)])
+                    else:
+                        model.Add(var == 0)
 
-        shared = {(d, t): model.NewBoolVar(f"pec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
-
+        # 2. Sync practicals/tutorials
+        dt_etype_per_sec = {}
         for sec in relevant_secs:
-            for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
-                if (d, t) in shared:
-                    model.Add(var == shared[(d, t)])
-                else:
-                    model.Add(var == 0)
+            sec_dts = {(etype, d, t) for etype, d, t, _ in x2_keys_by_sec_cc.get((sec, cc), [])}
+            dt_etype_per_sec[sec] = sec_dts
+            
+        common_blocks = set.intersection(*dt_etype_per_sec.values()) if dt_etype_per_sec else set()
+        if common_blocks:
+            shared_x2 = {(etype, d, t): model.NewBoolVar(f"pec_{cc}_x2_{etype}_d{d}_t{t}") for (etype, d, t) in common_blocks}
+            for sec in relevant_secs:
+                for etype, d, t, var in x2_keys_by_sec_cc.get((sec, cc), []):
+                    if (etype, d, t) in shared_x2:
+                        model.Add(var == shared_x2[(etype, d, t)])
+                    else:
+                        model.Add(var == 0)
 
 
 # ===================================================================
