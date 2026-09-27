@@ -374,6 +374,53 @@ edited_subject_lab_df = st.data_editor(
 
 st.divider()
 
+# =====================================================================
+# EVS Slots (5th Semester only)
+# =====================================================================
+st.header("6. EVS Slots (5th Sem)")
+st.markdown("""
+Specify the single weekly EVS slot for each **5th semester** class section.
+Add **one row per class** — the solver will lock that slot for EVS.
+""")
+
+fifth_sem_sections = list(section_map.get("5", []))
+if not fifth_sem_sections:
+    fifth_sem_sections = ["5A", "5B", "5C", "5D"]
+
+evs_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+evs_slot_options = [
+    "S1 (9:00 - 9:55)", "S2 (9:55 - 10:50)", "S3 (11:05 - 12:00)",
+    "S4 (12:00 - 12:50)", "L1 (12:50 - 1:45)", "S5 (1:45 - 2:40)", "S6 (2:40 - 3:35)", "S7 (3:35 - 4:30)"
+]
+
+default_evs = current_config.get("evs_slots", [])
+default_evs = [
+    r for r in default_evs
+    if isinstance(r, dict) and isinstance(r.get("Class"), str) and r.get("Class").strip() and str(r.get("Class")) != "nan"
+]
+
+# Ensure any previously saved sections are still available in the dropdown
+for r in default_evs:
+    c = str(r.get("Class")).strip()
+    if c and c != "nan" and c not in fifth_sem_sections:
+        fifth_sem_sections.append(c)
+
+df_evs = pd.DataFrame(default_evs, columns=["Class", "Day", "Slot"])
+
+edited_evs_df = st.data_editor(
+    df_evs,
+    num_rows="dynamic",
+    column_config={
+        "Class": st.column_config.SelectboxColumn("Class Section (5th Sem)", options=fifth_sem_sections),
+        "Day": st.column_config.SelectboxColumn("Day", options=evs_days),
+        "Slot": st.column_config.SelectboxColumn("Slot", options=evs_slot_options),
+    },
+    use_container_width=True,
+    key="evs_slots_editor"
+)
+
+st.divider()
+
 # ----------------------------------------------------------------------
 # Save all constraints
 # ----------------------------------------------------------------------
@@ -383,6 +430,7 @@ if st.button("💾 Save Constraints", type="primary"):
     lab_alloc_list = edited_lab_df.to_dict(orient="records")
     first_sem_blocking_list = edited_first_sem_df.to_dict(orient="records")
     subject_lab_prefs_list = edited_subject_lab_df.to_dict(orient="records")
+    evs_slots_list = edited_evs_df.to_dict(orient="records")
     
     doc = {
         "type": "special_subjects",
@@ -395,6 +443,7 @@ if st.button("💾 Save Constraints", type="primary"):
         "cse_lab_allocations": lab_alloc_list,
         "first_sem_blocking": first_sem_blocking_list,
         "subject_lab_preferences": subject_lab_prefs_list,
+        "evs_slots": evs_slots_list,
     }
     
     try:
