@@ -249,6 +249,26 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
             "elective": "No",
         }
 
+    # --- EVS: add a virtual "EVS" course for 5th-sem sections that have EVS locks ---
+    # EVS is an external-department subject (like Maths) — not in the courses
+    # collection. One slot per week per class, no faculty tracked here.
+    evs_slots = constraints_doc.get("evs_slots", [])
+    evs_sections = set()
+    for entry in evs_slots:
+        cls = entry.get("Class", "")
+        if cls and isinstance(cls, str) and cls.strip():
+            evs_sections.add(cls)
+    for sec in evs_sections:
+        if "EVS" not in section_courses.get(sec, []):
+            section_courses.setdefault(sec, []).append("EVS")
+    if evs_sections:
+        course_info["EVS"] = {
+            "L": 1, "T": 0, "P": 0,
+            "semester": "5", "course_name": "Environmental Studies",
+            "lecture_in_lab": "No", "tutorial_in_lab": "No",
+            "elective": "No", "aec": "No",
+        }
+
     # --- faculty -> (section, course) assignments ---
     faculty_by_course: dict[str, list[str]] = {}
     faculty_all_courses: dict[str, list[dict]] = {}
@@ -998,8 +1018,7 @@ def build_and_solve(
         add_first_sem_blocking(model, x1, x2, mappings["first_sem_blocking"])
 
     if "evs" not in skip and mappings.get("evs_slots"):
-        add_evs_locks(model, x1, x2, mappings["evs_slots"],
-                      section_courses, course_info)
+        add_evs_locks(model, x1, mappings["evs_slots"])
 
     # ---- Soft objective ----
     penalties = []

@@ -641,19 +641,16 @@ def add_maths_locks(model, x1, x2, maths_slots, maths_course_code="MATHS"):
 
 
 # ===================================================================
-# H10.6 — EVS Slot Locks (5th Sem)
+# H10.6 — EVS Slot Locks (5th Sem, external dept)
 # ===================================================================
-def add_evs_locks(model, x1, x2, evs_slots, section_courses, course_info):
+def add_evs_locks(model, x1, evs_slots, evs_course_code="EVS"):
     """
-    Lock the EVS (AEC) lecture for each 5th-semester section to the
-    (day, slot) specified in the UI constraints table.
+    Lock pre-assigned EVS slots for 5th-semester sections.
+    EVS is taught by an external department (like Maths) and is not in
+    the courses collection — a virtual course code "EVS" is injected by
+    the solver before variables are created.
 
     evs_slots: list of {"Class": "5A", "Day": "Monday", "Slot": "S3 (...)"}
-
-    Strategy: identify the EVS/AEC course code for the section by looking
-    for the first course in section_courses[sec] whose course_info marks it
-    as AEC or whose name/code contains "AEC" or "EVS".  Then force that
-    specific (sec, cc, d, t) x1 variable to 1.
     """
     for entry in evs_slots:
         sec = entry.get("Class", "").strip()
@@ -665,22 +662,7 @@ def add_evs_locks(model, x1, x2, evs_slots, section_courses, course_info):
         t = SLOT_LABEL_TO_IDX.get(slot_label)
         if d is None or t is None:
             continue
-
-        # Find the EVS/AEC course code for this section
-        evs_cc = None
-        for cc in section_courses.get(sec, []):
-            info = course_info.get(cc, {})
-            is_aec = str(info.get("aec", "No")).lower() in ("yes", "y", "true")
-            code_u = cc.upper()
-            name_u = str(info.get("course_name", "")).upper()
-            if is_aec or "AEC" in code_u or "EVS" in code_u or "AEC" in name_u or "EVS" in name_u:
-                evs_cc = cc
-                break
-
-        if evs_cc is None:
-            continue  # no EVS/AEC course found for this section — skip silently
-
-        key1 = (sec, evs_cc, d, t)
+        key1 = (sec, evs_course_code, d, t)
         if key1 in x1:
             model.Add(x1[key1] == 1)
 
