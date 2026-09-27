@@ -7,22 +7,46 @@ st.set_page_config(page_title="Constraints Builder", page_icon="⚙️", layout=
 st.title("⚙️ Constraints Builder")
 st.markdown("Configure special scheduling rules and tag specific subjects to trigger hardcoded constraints.")
 
-# Connect to database
+# ---------------------------------------------------------------------------
+# Cached DB loaders — run once per session, not on every widget rerun.
+# This prevents the "SessionInfo before initialized" race condition on
+# HuggingFace where a data_editor add/remove triggers a full rerun and
+# the slow DB round-trip causes the WebSocket message to arrive before
+# the new session is ready.
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_courses():
+    try:
+        _db = get_db()
+        return list(_db["courses"].find({}, {"_id": 0})), True
+    except Exception:
+        return [
+            {"course_code": "CS301", "course_name": "Data Structures"},
+            {"course_code": "CS304", "course_name": "AEC - EVS"},
+            {"course_code": "PG101", "course_name": "Advanced DBMS (Core)"},
+            {"course_code": "OE101", "course_name": "Open Elective - AI Base"},
+        ], False
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_config():
+    try:
+        _db = get_db()
+        return _db["constraints"].find_one({"type": "special_subjects"}) or {}, True
+    except Exception:
+        return {}, False
+
+
+courses, db_ok = _load_courses()
+current_config, _cfg_ok = _load_config()
+
+# Live db handle — only needed for Save / Delete buttons, not for reads.
 try:
     db = get_db()
-    courses_cursor = db["courses"].find({}, {"_id": 0})
-    courses = list(courses_cursor)
-    db_ok = True
 except Exception as e:
     db = None
-    db_ok = False
-    st.warning(f"⚠️ Could not connect to database ({e}). Default fallback values are enabled.")
-    courses = [
-        {"course_code": "CS301", "course_name": "Data Structures"},
-        {"course_code": "CS304", "course_name": "AEC - EVS"},
-        {"course_code": "PG101", "course_name": "Advanced DBMS (Core)"},
-        {"course_code": "OE101", "course_name": "Open Elective - AI Base"},
-    ]
+    if not db_ok:
+        st.warning(f"⚠️ Could not connect to database ({e}). Default fallback values are enabled.")
 
 course_names = [c.get("course_name", c.get("course_code", "Unknown")) for c in courses]
 ug_courses = [c for c in courses if str(c.get("ug_pg", "UG")).upper() == "UG"]
@@ -34,17 +58,7 @@ pg_course_names = [c.get("course_name", c.get("course_code", "Unknown")) for c i
 if not course_names:
     st.info("No courses found in the `courses` collection. Once the Master Subject List parsing is complete, they will appear here.", icon="🕒")
 
-# --- Fetch existing configuration ---
-current_config = {}
-if db_ok and db is not None:
-    try:
-        constraints_col = db["constraints"]
-        current_config = constraints_col.find_one({"type": "special_subjects"}) or {}
-    except Exception:
-        pass
 
-
-# --- Fetch existing configuration for PG ---
 default_pg_core = current_config.get("pg_shared_core", "None")
 if default_pg_core not in pg_course_names:
     default_pg_core = "None"
@@ -456,6 +470,7 @@ if st.button("💾 Save Constraints", type="primary"):
     try:
         constraints_col = db["constraints"]
         constraints_col.update_one({"type": "special_subjects"}, {"$set": doc}, upsert=True)
+        _load_config.clear()   # invalidate cache so next rerun picks up fresh config
         st.success("✅ Constraint mappings updated successfully in the database!")
     except Exception as e:
         st.warning(f"⚠️ Database offline or error: {e}. Constraints were not saved, but the UI is functioning!", icon="⚠️")
