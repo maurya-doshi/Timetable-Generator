@@ -705,26 +705,42 @@ def add_spread_constraint(model, section_courses, x1, x2, course_info=None):
     """
     SOFT constraint: penalize multiple lectures or multiple practical blocks of the same
     subject for the same section on the same day. Returns penalty terms to add to the objective.
+
+    Penalty weights:
+      - Pure-lecture courses (L > 0, T == 0, P == 0): weight 50
+        These have no structural need to appear twice on the same day (e.g. 3:0:0 SAN).
+        A strong penalty pushes the solver to spread them across days.
+      - All other courses (mixed credits, labs, tutorials): weight 10
+        A lecture + lab/tutorial may legitimately share a day (e.g. 2:0:1),
+        so only a mild deterrent is applied to pure duplicate lectures/blocks.
     """
     from collections import defaultdict
     lecture_day_vars = defaultdict(list)
     block_day_vars = defaultdict(list)
     penalties = []
-    
+
     for (sec, cc, d, t), var in x1.items():
         lecture_day_vars[(sec, cc, d)].append(var)
     for (sec, cc, etype, d, t_start), var in x2.items():
         block_day_vars[(sec, cc, d)].append(var)
-        
+
     for sec, courses in section_courses.items():
         for cc in courses:
+            info = (course_info or {}).get(cc, {})
+            is_pure_lecture = (
+                int(info.get("L", 0)) > 0
+                and int(info.get("T", 0)) == 0
+                and int(info.get("P", 0)) == 0
+            )
+            lec_weight = 50 if is_pure_lecture else 10
+
             for d in range(NUM_DAYS):
                 lvars = lecture_day_vars.get((sec, cc, d), [])
                 if len(lvars) >= 2:
                     is_multi = model.NewBoolVar(f"multi_lec_{sec}_{cc}_d{d}")
                     model.Add(sum(lvars) >= 2).OnlyEnforceIf(is_multi)
                     model.Add(sum(lvars) <= 1).OnlyEnforceIf(is_multi.Not())
-                    penalties.append(10 * is_multi)
+                    penalties.append(lec_weight * is_multi)
                 bvars = block_day_vars.get((sec, cc, d), [])
                 if len(bvars) >= 2:
                     is_multi_b = model.NewBoolVar(f"multi_blk_{sec}_{cc}_d{d}")
