@@ -921,6 +921,7 @@ def build_and_solve(
 
     x2T_by_sec_cc      = defaultdict(list)
     x2P_by_sec_cc      = defaultdict(list)
+    x2_by_sec_cc       = defaultdict(list)
     x2_by_sec_dt_etype = defaultdict(list)
     x2_t0_by_sec_cc    = defaultdict(list)
     x2_keys_by_sec_cc  = defaultdict(list)
