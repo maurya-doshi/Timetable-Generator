@@ -33,6 +33,7 @@ from engine.constraints import (
     add_pec_concurrency,
     add_pg_shared,
     add_maths_locks,
+    add_evs_locks,
     add_cse_lab_locks,
     add_spread_constraint,
     add_first_slot_constraint,
@@ -409,6 +410,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
 
     lab_alloc = constraints_doc.get("cse_lab_allocations", [])
     first_sem_blocking = constraints_doc.get("first_sem_blocking", [])
+    evs_slots = constraints_doc.get("evs_slots", [])
     subject_lab_prefs = constraints_doc.get("subject_lab_preferences", DEFAULT_SUBJECT_LAB_PREFERENCES)
 
     sections_3rd = [s for s in section_courses if s.startswith("3")]
@@ -437,6 +439,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
         "maths_slots":        maths_slots,
         "lab_alloc":          lab_alloc,
         "first_sem_blocking": first_sem_blocking,
+        "evs_slots":          evs_slots,
         "subject_lab_prefs":  subject_lab_prefs,
         "faculty_elective_subcourse": faculty_elective_subcourse,
         "sections_3rd":       sections_3rd,
@@ -993,6 +996,10 @@ def build_and_solve(
 
     if "first_sem_blocking" not in skip and mappings["first_sem_blocking"]:
         add_first_sem_blocking(model, x1, x2, mappings["first_sem_blocking"])
+
+    if "evs" not in skip and mappings.get("evs_slots"):
+        add_evs_locks(model, x1, x2, mappings["evs_slots"],
+                      section_courses, course_info)
 
     # ---- Soft objective ----
     penalties = []
