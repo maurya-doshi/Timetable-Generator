@@ -405,7 +405,14 @@ for r in default_evs:
     if c and c != "nan" and c not in fifth_sem_sections:
         fifth_sem_sections.append(c)
 
-df_evs = pd.DataFrame(default_evs, columns=["Class", "Day", "Slot"])
+df_evs = pd.DataFrame(default_evs) if default_evs else pd.DataFrame(columns=["Class", "Day", "Slot"])
+# Fill any NaN (e.g. from partial DB rows) with "" so SelectboxColumn never
+# receives an unresolvable value, which triggers React error #185.
+for col in ["Class", "Day", "Slot"]:
+    if col not in df_evs.columns:
+        df_evs[col] = ""
+    df_evs[col] = df_evs[col].fillna("").astype(str).replace("nan", "")
+
 
 edited_evs_df = st.data_editor(
     df_evs,
