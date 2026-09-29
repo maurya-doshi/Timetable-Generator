@@ -134,7 +134,7 @@ def add_co_faculty_logic(model, x2, co_fac, faculty_assignments):
 
 
 def add_max_workload(model, co_fac, faculty_assignments, faculty_designations,
-                     events_by_fac, semester="odd", count_cofac_in_workload=None):
+                     events_by_fac, semester="odd"):
     """
     Enforces a per-faculty workload cap based on designation.
 
@@ -153,9 +153,6 @@ def add_max_workload(model, co_fac, faculty_assignments, faculty_designations,
     Only an upper cap is enforced. A lower bound is intentionally omitted
     because faculty may legitimately teach fewer classes than the target
     (e.g. they only appear in the DB for one course).
-
-    The `count_cofac_in_workload` parameter is kept for API compatibility
-    but is no longer used — co-faculty blocks always count toward the cap.
 
     events_by_fac: precomputed dict  faculty_name -> list of primary BoolVars
                    (x1 + x2 vars for all (section, course) in that faculty's assignments,
@@ -387,40 +384,6 @@ def add_no_empty_days(model, section_courses, event_vars_sec, penalty_weight=500
 
 
 # ===================================================================
-# H6 — Faculty Break (merged into add_no_faculty_clash via padded intervals)
-# ===================================================================
-def add_faculty_break(model, x1, x2, faculty_assignments, co_fac=None):
-    """
-    DEPRECATED — no longer called.
-
-    H6 (1-slot faculty break between consecutive classes) is now enforced
-    automatically by the padded interval durations in add_no_faculty_clash:
-      - lecture duration 1 → padded 2  (reserves the next slot)
-      - block   duration 2 → padded 3  (reserves the slot after the block)
-    AddNoOverlap on those padded intervals subsumes both H1 and H6.
-    """
-    pass
-
-
-# ===================================================================
-# H6.5 — Co-faculty break (merged into add_no_faculty_clash via padded intervals)
-# ===================================================================
-def add_co_faculty_break(model, x1, x2, co_fac, faculty_assignments):
-    """
-    DEPRECATED — no longer called.
-
-    H6.5 (1-slot gap between primary events and co-faculty blocks, and between
-    consecutive co-faculty duties) is now fully enforced by the padded interval
-    durations in add_no_faculty_clash. Co-faculty intervals use duration=3
-    (2-slot block + 1-slot padding), so AddNoOverlap automatically enforces:
-      Rule A) primary ends at t → no co-fac starts at t+1
-      Rule B) co-fac ends at t+1 → no primary starts at t+2
-      Rule C) no two co-fac duties back-to-back without a gap
-    """
-    pass
-
-
-# ===================================================================
 # H1.8 — HOD constraint: No first slot (S1, 9:00 AM) across the week
 # ===================================================================
 def add_hod_no_first_slot(model, x1, x2, co_fac, faculty_assignments, hod_name):
@@ -500,6 +463,60 @@ def add_oe_concurrency(model, section_courses, oe_course_codes, x1_keys_by_sec_c
 
 
 # ===================================================================
+# Shared helper for AEC / PEC concurrency
+# ===================================================================
+def _add_concurrency_group(model, section_courses, course_codes,
+                           x1_keys_by_sec_cc, x2_keys_by_sec_cc, label):
+    """
+    Ensure all sections sharing a course code attend lectures and blocks
+    concurrently.  The solver freely picks which (day, slot) to use.
+    Shared BoolVars tie every section's variable to one canonical decision.
+
+    label : short prefix for BoolVar names, e.g. ``"aec"`` or ``"pec"``.
+    """
+    if x2_keys_by_sec_cc is None:
+        x2_keys_by_sec_cc = {}
+
+    for cc in course_codes:
+        relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
+        if len(relevant_secs) <= 1:
+            continue
+
+        # 1. Sync lectures
+        dt_per_sec = {
+            sec: {(d, t) for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), [])}
+            for sec in relevant_secs
+        }
+        common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
+        if common_dt:
+            shared = {(d, t): model.NewBoolVar(f"{label}_{cc}_d{d}_t{t}") for (d, t) in common_dt}
+            for sec in relevant_secs:
+                for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
+                    if (d, t) in shared:
+                        model.Add(var == shared[(d, t)])
+                    else:
+                        model.Add(var == 0)
+
+        # 2. Sync practicals/tutorials
+        dt_etype_per_sec = {
+            sec: {(etype, d, t) for etype, d, t, _ in x2_keys_by_sec_cc.get((sec, cc), [])}
+            for sec in relevant_secs
+        }
+        common_blocks = set.intersection(*dt_etype_per_sec.values()) if dt_etype_per_sec else set()
+        if common_blocks:
+            shared_x2 = {
+                (etype, d, t): model.NewBoolVar(f"{label}_{cc}_x2_{etype}_d{d}_t{t}")
+                for (etype, d, t) in common_blocks
+            }
+            for sec in relevant_secs:
+                for etype, d, t, var in x2_keys_by_sec_cc.get((sec, cc), []):
+                    if (etype, d, t) in shared_x2:
+                        model.Add(var == shared_x2[(etype, d, t)])
+                    else:
+                        model.Add(var == 0)
+
+
+# ===================================================================
 # H7 — AEC concurrency (common across all sections of each sem, anytime)
 # ===================================================================
 def add_aec_concurrency(model, section_courses, aec_course_codes, x1_keys_by_sec_cc, x2_keys_by_sec_cc=None):
@@ -510,45 +527,8 @@ def add_aec_concurrency(model, section_courses, aec_course_codes, x1_keys_by_sec
     Shared BoolVars guarantee that if one section has AEC at a slot, all sections
     in that semester take AEC at that exact slot.
     """
-    if x2_keys_by_sec_cc is None:
-        x2_keys_by_sec_cc = {}
-        
-    for cc in aec_course_codes:
-        relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
-        if len(relevant_secs) <= 1:
-            continue
-
-        # 1. Sync lectures
-        dt_per_sec = {}
-        for sec in relevant_secs:
-            sec_dts = {(d, t) for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), [])}
-            dt_per_sec[sec] = sec_dts
-
-        common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
-        if common_dt:
-            shared = {(d, t): model.NewBoolVar(f"aec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
-            for sec in relevant_secs:
-                for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
-                    if (d, t) in shared:
-                        model.Add(var == shared[(d, t)])
-                    else:
-                        model.Add(var == 0)
-                        
-        # 2. Sync practicals/tutorials
-        dt_etype_per_sec = {}
-        for sec in relevant_secs:
-            sec_dts = {(etype, d, t) for etype, d, t, _ in x2_keys_by_sec_cc.get((sec, cc), [])}
-            dt_etype_per_sec[sec] = sec_dts
-            
-        common_blocks = set.intersection(*dt_etype_per_sec.values()) if dt_etype_per_sec else set()
-        if common_blocks:
-            shared_x2 = {(etype, d, t): model.NewBoolVar(f"aec_{cc}_x2_{etype}_d{d}_t{t}") for (etype, d, t) in common_blocks}
-            for sec in relevant_secs:
-                for etype, d, t, var in x2_keys_by_sec_cc.get((sec, cc), []):
-                    if (etype, d, t) in shared_x2:
-                        model.Add(var == shared_x2[(etype, d, t)])
-                    else:
-                        model.Add(var == 0)
+    _add_concurrency_group(model, section_courses, aec_course_codes,
+                           x1_keys_by_sec_cc, x2_keys_by_sec_cc, "aec")
 
 
 # ===================================================================
@@ -561,45 +541,8 @@ def add_pec_concurrency(model, section_courses, pec_course_codes, x1_keys_by_sec
     The solver freely picks which (day, slot) combinations to use — can be anytime.
     Shared BoolVars guarantee that all sections in that semester take PEC simultaneously.
     """
-    if x2_keys_by_sec_cc is None:
-        x2_keys_by_sec_cc = {}
-        
-    for cc in pec_course_codes:
-        relevant_secs = [sec for sec, courses in section_courses.items() if cc in courses]
-        if len(relevant_secs) <= 1:
-            continue
-
-        # 1. Sync lectures
-        dt_per_sec = {}
-        for sec in relevant_secs:
-            sec_dts = {(d, t) for d, t, _ in x1_keys_by_sec_cc.get((sec, cc), [])}
-            dt_per_sec[sec] = sec_dts
-
-        common_dt = set.intersection(*dt_per_sec.values()) if dt_per_sec else set()
-        if common_dt:
-            shared = {(d, t): model.NewBoolVar(f"pec_{cc}_d{d}_t{t}") for (d, t) in common_dt}
-            for sec in relevant_secs:
-                for d, t, var in x1_keys_by_sec_cc.get((sec, cc), []):
-                    if (d, t) in shared:
-                        model.Add(var == shared[(d, t)])
-                    else:
-                        model.Add(var == 0)
-
-        # 2. Sync practicals/tutorials
-        dt_etype_per_sec = {}
-        for sec in relevant_secs:
-            sec_dts = {(etype, d, t) for etype, d, t, _ in x2_keys_by_sec_cc.get((sec, cc), [])}
-            dt_etype_per_sec[sec] = sec_dts
-            
-        common_blocks = set.intersection(*dt_etype_per_sec.values()) if dt_etype_per_sec else set()
-        if common_blocks:
-            shared_x2 = {(etype, d, t): model.NewBoolVar(f"pec_{cc}_x2_{etype}_d{d}_t{t}") for (etype, d, t) in common_blocks}
-            for sec in relevant_secs:
-                for etype, d, t, var in x2_keys_by_sec_cc.get((sec, cc), []):
-                    if (etype, d, t) in shared_x2:
-                        model.Add(var == shared_x2[(etype, d, t)])
-                    else:
-                        model.Add(var == 0)
+    _add_concurrency_group(model, section_courses, pec_course_codes,
+                           x1_keys_by_sec_cc, x2_keys_by_sec_cc, "pec")
 
 
 # ===================================================================
@@ -856,105 +799,6 @@ def add_first_slot_constraint(model, section_courses, x1_t0_by_sec_cc, x2_t0_by_
 LAB_ROOMS = ["CSE Lab 1", "CSE Lab 2", "CSE Lab 3", "CSE Lab 4"]
 
 
-def add_lab_room_assignment(model, x1, x2, section_courses, course_info,
-                            pg_sections, blocked_room_slots=None):
-    """
-    Assign each scheduled practical (and tutorial-in-lab) block, as well as AEC lectures,
-    to exactly one of CSE Lab 1–4.  Ensures:
-        1. If an event is scheduled → it gets exactly 1 room.
-        2. If an event is NOT scheduled → it gets 0 rooms.
-        3. No two events share the same room at the same time.
-           A 2-slot block occupies slots t AND t+1. A 1-slot lecture occupies slot t.
-        4. Rooms blocked by 1st/2nd sem CSE lab locks are unavailable.
-
-    Returns:
-        lab_room  — dict  (sec, cc, etype, d, t, room) → BoolVar
-    """
-    if blocked_room_slots is None:
-        blocked_room_slots = set()
-
-    # Collect all items that need a room.
-    # We will store a tuple: (sec, cc, etype, d, t, duration, active_var)
-    needs_room = []
-    
-    for sec, courses in section_courses.items():
-        for cc in courses:
-            info = course_info.get(cc, {})
-            
-            # Practicals always need a lab
-            P = info.get("P", 0)
-            if P > 0:
-                for d in range(NUM_DAYS):
-                    for t in VALID_BLOCK_STARTS:
-                        k = (sec, cc, "P", d, t)
-                        if k in x2:
-                            needs_room.append((sec, cc, "P", d, t, 2, x2[k]))
-                            
-            # Tutorials explicitly marked as needing a computer lab
-            if info.get("tutorial_in_lab", "No").lower() in ("yes", "y", "true"):
-                T = info.get("T", 0)
-                if T > 0:
-                    for d in range(NUM_DAYS):
-                        for t in VALID_BLOCK_STARTS:
-                            k = (sec, cc, "T", d, t)
-                            if k in x2:
-                                needs_room.append((sec, cc, "T", d, t, 2, x2[k]))
-
-    # Create room-assignment BoolVars
-    lab_room = {}
-    for (sec, cc, etype, d, t, duration, active_var) in needs_room:
-        for room in LAB_ROOMS:
-            var = model.NewBoolVar(f"room_{sec}_{cc}_{etype}_d{d}_t{t}_{room}")
-            lab_room[(sec, cc, etype, d, t, room)] = var
-
-    # Constraint 1 & 2: each event gets at most 1 room (from available CSE Labs 1-4)
-    for (sec, cc, etype, d, t, duration, active_var) in needs_room:
-        room_vars = [lab_room[(sec, cc, etype, d, t, room)] for room in LAB_ROOMS]
-        model.Add(sum(room_vars) <= active_var)
-
-    # Constraint 3: no room double-booking via AddNoOverlap
-    # Each (event, room) pair becomes an optional interval; AddNoOverlap on intervals
-    # grouped by (room, day) prevents any two events from sharing a room at the same time.
-    room_intervals = defaultdict(list)   # (room, d) -> list of OptionalIntervalVar
-    for (sec, cc, etype, d, t, duration, active_var) in needs_room:
-        for room in LAB_ROOMS:
-            room_var = lab_room.get((sec, cc, etype, d, t, room))
-            if room_var is None:
-                continue
-            iv = model.NewOptionalIntervalVar(
-                t, duration, t + duration, room_var,
-                f"iv_room_{room}_{sec}_{cc}_{etype}_d{d}_t{t}"
-            )
-            room_intervals[(room, d)].append(iv)
-
-    for (room, d), ivs in room_intervals.items():
-        if len(ivs) > 1:
-            model.AddNoOverlap(ivs)
-
-    # Build slot-coverage index in one O(N) pass — used by Constraints 4 and symmetry.
-    # slot_to_needs_idx[(d, t)] → indices into needs_room whose event COVERS slot t on day d.
-    slot_to_needs_idx = defaultdict(list)
-    for idx, (sec, cc, etype, d, t, dur, _) in enumerate(needs_room):
-        slot_to_needs_idx[(d, t)].append(idx)
-        if dur == 2:
-            slot_to_needs_idx[(d, t + 1)].append(idx)
-
-    # Constraint 4: blocked rooms — O(|blocked| × avg events per slot) vs old O(|blocked| × N)
-    for (room, d, t) in blocked_room_slots:
-        if room not in LAB_ROOMS:
-            continue
-        for idx in slot_to_needs_idx.get((d, t), []):
-            sec, cc, etype, _, t2, _, _ = needs_room[idx]
-            k_room = (sec, cc, etype, d, t2, room)
-            if k_room in lab_room:
-                model.Add(lab_room[k_room] == 0)
-
-    # NOTE: Room symmetry breaking removed. When rooms are blocked by
-    # 1st-sem CSE lab locks, the implication chain (room_i_used → room_{i-1}_used)
-    # can propagate through blocked rooms and force other rooms to 0, creating
-    # infeasibility. The solver handles room assignment well without it.
-
-    return lab_room
 
 def add_friday_half_day(model, x1, x2, section_courses, course_day_events):
     """

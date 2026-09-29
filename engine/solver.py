@@ -19,7 +19,7 @@ import queue as _queue_mod
 from collections import defaultdict
 
 from ortools.sat.python import cp_model
-from db import get_db
+from db import get_db, DEFAULT_SECTION_MAP
 from engine.constraints import (
     NUM_DAYS, NUM_SLOTS, VALID_BLOCK_STARTS,
     SLOT_LABEL_TO_IDX, DAY_LABEL_TO_IDX,
@@ -40,7 +40,6 @@ from engine.constraints import (
     add_hod_no_first_slot,
     add_co_faculty_logic,
     add_max_workload,
-    add_lab_room_assignment,
     add_friday_half_day,
     add_morning_first,
     add_no_empty_days,
@@ -50,22 +49,12 @@ from engine.constraints import (
 )
 
 
-DAYS_LABELS  = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-SLOTS_LABELS = ["S1", "S2", "S3", "S4", "L1", "S5", "S6", "S7"]
-
 # -----------------------------------------------------------------------
-# Default section map (also mirrored in db._DEFAULT_SECTION_MAP)
+# Helpers
 # -----------------------------------------------------------------------
-_SEMESTER_SECTIONS = {
-    "1": ["1A", "1B", "1C", "1K"],
-    "2": ["2A", "2B", "2C", "2K"],
-    "3": ["3A", "3B", "3C", "3D"],
-    "4": ["4A", "4B", "4C", "4D"],
-    "5": ["5A", "5B", "5C", "5D"],
-    "6": ["6A", "6B", "6C", "6D"],
-    "7": ["7A", "7B", "7C"],
-    "8": ["8A", "8B", "8C"],
-}
+def _truthy(val) -> bool:
+    """Return True for "yes", "y", or "true" (case-insensitive)."""
+    return str(val).strip().lower() in ("yes", "y", "true")
 
 
 # -----------------------------------------------------------------------
@@ -81,9 +70,9 @@ def _sections_for_semester(sem_str: str, section_map: dict | None = None) -> lis
 
     Parameters
     ----------
-    section_map : optional override dict replacing ``_SEMESTER_SECTIONS``
+    section_map : optional override dict replacing ``DEFAULT_SECTION_MAP``
     """
-    lookup = section_map if section_map else _SEMESTER_SECTIONS
+    lookup = section_map if section_map else DEFAULT_SECTION_MAP
     s = str(sem_str).strip()
 
     # 1. Exact match for a whole semester (e.g. "3" -> ["3A", "3B", "3C", "3D"])
@@ -326,8 +315,8 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     for code, info in course_info.items():
         ug_pg = str(info.get("ug_pg", "UG")).strip().upper()
         sem = str(info.get("semester", "")).strip()
-        is_elective = str(info.get("elective", "No")).lower() in ("yes", "y", "true")
-        is_aec = str(info.get("aec", "No")).lower() in ("yes", "y", "true")
+        is_elective = _truthy(info.get("elective", "No"))
+        is_aec = _truthy(info.get("aec", "No"))
         cname = str(info.get("course_name", "")).upper()
         code_u = code.upper()
 
@@ -425,7 +414,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
     pg_core_code = name_to_code.get(pg_core_name, pg_core_name) if pg_core_name else None
 
     pg_pe_codes = [code for code, info in course_info.items()
-                   if str(info.get("elective", "No")).lower() in ("yes", "y", "true")
+                   if _truthy(info.get("elective", "No"))
                    and str(info.get("ug_pg", "UG")).upper() == "PG"]
 
     lab_alloc = constraints_doc.get("cse_lab_allocations", [])
@@ -544,9 +533,13 @@ def _assign_lab_rooms_post_solve(x1, x2, solver, section_courses, course_info, b
     if subject_lab_prefs is None:
         subject_lab_prefs = []
 
-    room_occupied = defaultdict(bool)
-    for (room, d, t) in blocked_room_slots:
-        room_occupied[(room, d, t)] = True
+    room_occupied = set(blocked_room_slots)   # (room, d, t) tuples
+
+    # Pre-build preference lookup once — avoids repeated .get() calls inside event loop
+    _pref_rules = [
+        (p.get("Keyword", "").upper(), p.get("Preferred Lab", ""))
+        for p in subject_lab_prefs
+    ]
 
     assigned_rooms = {}
     events = []
@@ -554,7 +547,7 @@ def _assign_lab_rooms_post_solve(x1, x2, solver, section_courses, course_info, b
         for cc in courses:
             info = course_info.get(cc, {})
             cname = info.get("course_name", cc).upper()
-            
+
             # Practicals (P)
             if info.get("P", 0) > 0:
                 for d in range(NUM_DAYS):
@@ -562,39 +555,28 @@ def _assign_lab_rooms_post_solve(x1, x2, solver, section_courses, course_info, b
                         k = (sec, cc, "P", d, t)
                         if k in x2 and solver.Value(x2[k]) == 1:
                             events.append((sec, cc, "P", d, t, 2, cname))
-                            
+
             # Tutorials in lab (T)
-            if info.get("tutorial_in_lab", "No").lower() in ("yes", "y", "true") and info.get("T", 0) > 0:
+            if _truthy(info.get("tutorial_in_lab", "No")) and info.get("T", 0) > 0:
                 for d in range(NUM_DAYS):
                     for t in VALID_BLOCK_STARTS:
                         k = (sec, cc, "T", d, t)
                         if k in x2 and solver.Value(x2[k]) == 1:
                             events.append((sec, cc, "T", d, t, 2, cname))
 
-    def get_preferred_room(cname):
-        for pref in subject_lab_prefs:
-            kw = pref.get("Keyword", "").upper()
-            if kw and kw in cname:
-                return pref.get("Preferred Lab", "")
-        return ""
-
     for sec, cc, etype, d, t, dur, cname in events:
-        pref_room = get_preferred_room(cname)
+        pref_room = next((room for kw, room in _pref_rules if kw and kw in cname), "")
         candidate_rooms = list(LAB_ROOMS)
         if pref_room in candidate_rooms:
             candidate_rooms.remove(pref_room)
             candidate_rooms.insert(0, pref_room)
 
         for room in candidate_rooms:
-            free = True
-            for slot_offset in range(dur):
-                if room_occupied[(room, d, t + slot_offset)]:
-                    free = False
-                    break
+            free = all((room, d, t + offset) not in room_occupied for offset in range(dur))
             if free:
                 assigned_rooms[(sec, cc, etype, d, t)] = room
-                for slot_offset in range(dur):
-                    room_occupied[(room, d, t + slot_offset)] = True
+                for offset in range(dur):
+                    room_occupied.add((room, d, t + offset))
                 break
 
     return assigned_rooms

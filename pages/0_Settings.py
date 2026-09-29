@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from db import get_db, get_settings, save_settings, get_section_map, _DEFAULT_SECTION_MAP
+from db import get_db, get_settings, save_settings, get_section_map, DEFAULT_SECTION_MAP
 
 st.set_page_config(page_title="Settings", page_icon="⚙️", layout="wide")
 st.title("⚙️ Settings")
@@ -33,7 +33,7 @@ st.markdown(
     """
 )
 
-current_map = settings.get("section_map") or dict(_DEFAULT_SECTION_MAP)
+current_map = settings.get("section_map") or dict(DEFAULT_SECTION_MAP)
 
 # Build editable dataframe
 map_rows = [

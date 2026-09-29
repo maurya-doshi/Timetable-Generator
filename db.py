@@ -10,9 +10,8 @@ logger = logging.getLogger(__name__)
 
 _client = None
 
-# Default section map — mirrors the hard-coded dict in solver.py.
-# Stored here so db.py and solver.py share the same authoritative default.
-_DEFAULT_SECTION_MAP = {
+# Default section map — single authoritative source shared with solver.py.
+DEFAULT_SECTION_MAP = {
     "1": ["1A", "1B", "1C", "1K"],
     "2": ["2A", "2B", "2C", "2K"],
     "3": ["3A", "3B", "3C", "3D"],
@@ -159,4 +158,4 @@ def get_section_map() -> dict:
             return section_map
     except Exception:
         pass
-    return dict(_DEFAULT_SECTION_MAP)
+    return dict(DEFAULT_SECTION_MAP)
