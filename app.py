@@ -6,6 +6,22 @@ st.set_page_config(
     layout="wide",
 )
 
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_db_status():
+    """Fetch dashboard stats from Atlas. Cached for 30 s to avoid
+    hammering the DB on every page navigation."""
+    from db import get_db
+    db = get_db()
+    courses_n   = db["courses"].count_documents({})
+    fac_odd_n   = db["faculty_odd"].count_documents({})
+    fac_even_n  = db["faculty_even"].count_documents({})
+    constraints_doc = db["constraints"].find_one({"type": "special_subjects"}) or {}
+    oe_n  = len(constraints_doc.get("open_electives", []))
+    aec_n = len(constraints_doc.get("aec", []))
+    saved_n = db["timetables"].count_documents({})
+    return courses_n, fac_odd_n, fac_even_n, oe_n, aec_n, saved_n
+
 st.title("📅 Timetable Generator")
 st.markdown("*Constraint-based academic timetable scheduling powered by Google OR-Tools CP-SAT.*")
 
@@ -17,16 +33,7 @@ st.divider()
 st.subheader("📊 Database Status")
 
 try:
-    from db import get_db
-    db = get_db()
-
-    courses_n    = db["courses"].count_documents({})
-    fac_odd_n    = db["faculty_odd"].count_documents({})
-    fac_even_n   = db["faculty_even"].count_documents({})
-    constraints_doc = db["constraints"].find_one({"type": "special_subjects"}) or {}
-    oe_n    = len(constraints_doc.get("open_electives", []))
-    aec_n   = len(constraints_doc.get("aec", []))
-    saved_n = db["timetables"].count_documents({})
+    courses_n, fac_odd_n, fac_even_n, oe_n, aec_n, saved_n = _get_db_status()
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Courses",          courses_n,  help="Total courses in the database")

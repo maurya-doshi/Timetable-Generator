@@ -31,6 +31,65 @@ from db import (
     delete_timetable_result,
 )
 
+
+# ---------------------------------------------------------------------------
+# Cached DB helpers — fetched once per app process, not on every rerun.
+# @st.cache_resource caches across all sessions; TTL=300 means a 5-min
+# staleness window which is fine for settings that rarely change.
+# ---------------------------------------------------------------------------
+@st.cache_resource(ttl=300, show_spinner=False)
+def _cached_settings():
+    """Return settings + section_map in one Atlas round-trip."""
+    try:
+        s = get_settings()
+        sm = get_section_map()
+        return s, sm
+    except Exception:
+        return {}, None
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_preflight_data(semester: str):
+    """Cache the raw DB counts and constraints doc for 30 s.
+
+    30 s is long enough to cover the entire solving polling loop
+    (1.5 s/rerun) without re-hitting Atlas, but short enough that
+    data is fresh when the user first loads the page.
+    """
+    try:
+        db = get_db()
+        courses_count = db["courses"].count_documents({})
+        fac_count     = db[f"faculty_{semester}"].count_documents({})
+        constraints_doc = db["constraints"].find_one({"type": "special_subjects"})
+        return courses_count, fac_count, constraints_doc
+    except Exception as e:
+        return 0, 0, None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_prev_list(semester: str):
+    """Cache the saved-results list for 60 s."""
+    try:
+        return list_timetable_results(semester)
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_preflight_run(semester: str, section_map_key: str):
+    """Cache the structural preflight result for 60 s.
+
+    section_map_key is a string hash of the section_map so cache
+    invalidates if settings change.
+    """
+    try:
+        from engine.preflight import load_and_run as _run_pf
+        import ast
+        section_map = ast.literal_eval(section_map_key) if section_map_key else None
+        return _run_pf(semester, section_map=section_map)
+    except Exception as e:
+        return {"errors": [], "warnings": [], "ok": True}
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -92,19 +151,12 @@ def _make_diff_styles(data: pd.DataFrame, changed: pd.DataFrame) -> pd.DataFrame
 
 
 # ---------------------------------------------------------------------------
-# Load settings & section map
+# Load settings & section map (cached — one Atlas call per 5 min max)
 # ---------------------------------------------------------------------------
-try:
-    _settings    = get_settings()
-    _section_map = get_section_map()
-    _acad_year   = _settings.get("academic_year", "")
-    _def_tlimit  = int(_settings.get("default_time_limit", 60))
-    _def_workers = int(_settings.get("default_workers", 8))
-except Exception:
-    _section_map = None
-    _acad_year   = ""
-    _def_tlimit  = 60
-    _def_workers = 8
+_settings, _section_map = _cached_settings()
+_acad_year   = _settings.get("academic_year", "")
+_def_tlimit  = int(_settings.get("default_time_limit", 60))
+_def_workers = int(_settings.get("default_workers", 8))
 
 # ---------------------------------------------------------------------------
 # Title
@@ -119,29 +171,39 @@ semester = st.radio("Semester", ["Odd", "Even"], horizontal=True, key="gen_sem")
 
 # ===========================================================================
 # PRE-FLIGHT CHECK (#2)
+# Skip all DB reads during the solver polling loop — data doesn't change
+# while the solver is running and each rerun should be as cheap as possible.
 # ===========================================================================
 st.header("📋 Pre-flight Check")
 
-db       = get_db()
-checks_ok = True
+_is_solving = st.session_state.get("_solver_running", False)
+checks_ok   = True
 
-# Basic DB checks
-courses_count = db["courses"].count_documents({})
+if _is_solving:
+    # During solving: reuse cached values from session_state set before launch
+    courses_count   = st.session_state.get("_pf_courses_count", 1)
+    fac_count       = st.session_state.get("_pf_fac_count", 1)
+    constraints_doc = st.session_state.get("_pf_constraints_doc")
+    _pf_cached      = st.session_state.get("_pf_result", {"ok": True, "errors": [], "warnings": []})
+else:
+    # Normal load: hit Atlas (but results are cached for 30s)
+    courses_count, fac_count, constraints_doc = _cached_preflight_data(semester.lower())
+    _sm_key = str(_section_map) if _section_map else ""
+    _pf_cached = _cached_preflight_run(semester.lower(), _sm_key)
+
+# ---- Display counts ----
 if courses_count > 0:
     st.success(f"✅ **Courses:** {courses_count} courses loaded")
 else:
     st.error("❌ **Courses:** No courses found — upload data on the Input Data page first.")
     checks_ok = False
 
-fac_col_name = f"faculty_{semester.lower()}"
-fac_count    = db[fac_col_name].count_documents({})
 if fac_count > 0:
     st.success(f"✅ **Faculty ({semester}):** {fac_count} records loaded")
 else:
     st.error(f"❌ **Faculty ({semester}):** No faculty records — upload data first.")
     checks_ok = False
 
-constraints_doc = db["constraints"].find_one({"type": "special_subjects"})
 if constraints_doc:
     oe_cnt    = len(constraints_doc.get("open_electives", []))
     aec_cnt   = len(constraints_doc.get("aec", []))
@@ -153,23 +215,18 @@ if constraints_doc:
 else:
     st.warning("⚠️ **Constraints:** Not configured — solver will run without special subject rules.")
 
-# Structural preflight
+# ---- Structural preflight ----
 if checks_ok:
-    try:
-        from engine.preflight import load_and_run as _run_pf
-        pf = _run_pf(semester.lower(), section_map=_section_map)
-        if pf["errors"]:
-            for err in pf["errors"]:
-                st.error(f"❌ {err}")
-            checks_ok = False
-        for warn in pf["warnings"]:
-            st.warning(f"⚠️ {warn}")
-        if pf["ok"] and not pf["warnings"]:
-            st.success("✅ **Structural checks:** All passed.")
-        elif pf["ok"]:
-            st.info("ℹ️ Preflight passed with warnings. The solver may still find a solution.")
-    except Exception as pf_err:
-        st.caption(f"ℹ️ Structural preflight skipped: {pf_err}")
+    if _pf_cached.get("errors"):
+        for err in _pf_cached["errors"]:
+            st.error(f"❌ {err}")
+        checks_ok = False
+    for warn in _pf_cached.get("warnings", []):
+        st.warning(f"⚠️ {warn}")
+    if _pf_cached.get("ok") and not _pf_cached.get("warnings"):
+        st.success("✅ **Structural checks:** All passed.")
+    elif _pf_cached.get("ok"):
+        st.info("ℹ️ Preflight passed with warnings. The solver may still find a solution.")
 
 st.divider()
 
@@ -198,49 +255,49 @@ st.divider()
 
 # ===========================================================================
 # LOAD PREVIOUS RESULT (#7)
+# Skip entirely during solving — not needed and costs an Atlas query.
 # ===========================================================================
-with st.expander("📂 Load a Previous Result", expanded=False):
-    try:
-        prev_list = list_timetable_results(semester.lower())
-    except Exception:
-        prev_list = []
+if not _is_solving:
+    with st.expander("📂 Load a Previous Result", expanded=False):
+        prev_list = _cached_prev_list(semester.lower())
 
-    if not prev_list:
-        st.info("No saved results found for this semester.")
-    else:
-        def _fmt(r):
-            ts  = r.get("generated_at")
-            ts_str = ts.strftime("%d %b %Y %H:%M") if ts else "?"
-            st_str = r.get("status", "?")
-            secs = r["stats"].get("num_sections", "?")
-            t    = r["stats"].get("solve_time_s", "?")
-            return f"{ts_str} — {st_str}  ({secs} sections, {t}s)"
+        if not prev_list:
+            st.info("No saved results found for this semester.")
+        else:
+            def _fmt(r):
+                ts  = r.get("generated_at")
+                ts_str = ts.strftime("%d %b %Y %H:%M") if ts else "?"
+                st_str = r.get("status", "?")
+                secs = r["stats"].get("num_sections", "?")
+                t    = r["stats"].get("solve_time_s", "?")
+                return f"{ts_str} — {st_str}  ({secs} sections, {t}s)"
 
-        options = {_fmt(r): r["id"] for r in prev_list}
-        selected_label = st.selectbox("Select result to load", list(options.keys()))
-        selected_id    = options[selected_label]
+            options = {_fmt(r): r["id"] for r in prev_list}
+            selected_label = st.selectbox("Select result to load", list(options.keys()))
+            selected_id    = options[selected_label]
 
-        col_load, col_del = st.columns(2)
-        with col_load:
-            if st.button("📥 Load Selected Result", use_container_width=True):
-                loaded = load_timetable_result(selected_id)
-                if loaded:
-                    # Archive current result before overwriting
-                    if "solver_result" in st.session_state:
-                        st.session_state["prev_solver_result"] = st.session_state["solver_result"]
-                    st.session_state["solver_result"] = loaded
-                    st.success("Result loaded.")
-                    st.rerun()
-                else:
-                    st.error("Could not load result.")
-        with col_del:
-            if st.button("🗑️ Delete Selected Result", use_container_width=True, type="secondary"):
-                ok = delete_timetable_result(selected_id)
-                if ok:
-                    st.success("Result deleted.")
-                    st.rerun()
-                else:
-                    st.error("Could not delete.")
+            col_load, col_del = st.columns(2)
+            with col_load:
+                if st.button("📥 Load Selected Result", use_container_width=True):
+                    loaded = load_timetable_result(selected_id)
+                    if loaded:
+                        # Archive current result before overwriting
+                        if "solver_result" in st.session_state:
+                            st.session_state["prev_solver_result"] = st.session_state["solver_result"]
+                        st.session_state["solver_result"] = loaded
+                        st.success("Result loaded.")
+                        st.rerun()
+                    else:
+                        st.error("Could not load result.")
+            with col_del:
+                if st.button("🗑️ Delete Selected Result", use_container_width=True, type="secondary"):
+                    ok = delete_timetable_result(selected_id)
+                    if ok:
+                        st.success("Result deleted.")
+                        _cached_prev_list.clear()  # Invalidate the cache after delete
+                        st.rerun()
+                    else:
+                        st.error("Could not delete.")
 
 st.divider()
 
@@ -256,69 +313,120 @@ if st.button("🚀 Generate Timetable", type="primary", use_container_width=True
     if "solver_result" in st.session_state:
         st.session_state["prev_solver_result"] = st.session_state["solver_result"]
 
-    progress_bar  = st.progress(0.0, text="Building model and solving... (0s elapsed)")
-    log_container = st.empty()
-
+    # -----------------------------------------------------------------------
+    # Launch solver in a background thread and store state in session_state.
+    # We do NOT block with a while-loop here — instead we use st.rerun() to
+    # poll, keeping each Streamlit execution short and the WebSocket alive.
+    # This fixes the HuggingFace ~150s session timeout.
+    # -----------------------------------------------------------------------
     progress_q    = queue.Queue()
     result_holder = {}
 
-    def _run_solver():
+    def _run_solver(result_holder, progress_q, semester, time_limit, num_workers, section_map):
         try:
             from engine.solver import build_and_solve
             result_holder["result"] = build_and_solve(
-                semester=semester.lower(),
+                semester=semester,
                 time_limit_seconds=int(time_limit),
                 num_workers=int(num_workers),
-                section_map=_section_map,
+                section_map=section_map,
                 progress_queue=progress_q,
             )
         except Exception as exc:
             import traceback
             result_holder["error"]     = str(exc)
             result_holder["traceback"] = traceback.format_exc()
+        finally:
+            result_holder["done"] = True
 
-    solver_thread = threading.Thread(target=_run_solver, daemon=True)
+    solver_thread = threading.Thread(
+        target=_run_solver,
+        args=(result_holder, progress_q, semester.lower(), time_limit, num_workers, _section_map),
+        daemon=True,
+    )
     solver_thread.start()
 
-    start_t   = time.time()
-    log_lines = []
+    # Snapshot preflight data into session_state so polling reruns
+    # can display it without hitting Atlas on every cycle.
+    st.session_state["_pf_courses_count"]   = courses_count
+    st.session_state["_pf_fac_count"]        = fac_count
+    st.session_state["_pf_constraints_doc"]  = constraints_doc
+    st.session_state["_pf_result"]           = _pf_cached
 
-    while solver_thread.is_alive():
-        elapsed = int(time.time() - start_t)
-        pct     = min(elapsed / max(time_limit, 1), 0.99)
-        progress_bar.progress(pct, text=f"Solving... ({elapsed}s elapsed)")
+    # Store everything needed for the polling loop in session_state
+    st.session_state["_solver_running"] = True
+    st.session_state["_solver_thread"]  = solver_thread
+    st.session_state["_solver_result_holder"] = result_holder
+    st.session_state["_solver_progress_q"]    = progress_q
+    st.session_state["_solver_start_t"]  = time.time()
+    st.session_state["_solver_log_lines"] = []
+    st.session_state["_solver_time_limit"] = int(time_limit)
+    st.session_state["_solver_semester"]   = semester.lower()
+    st.rerun()
 
-        # Drain live log queue
-        while not progress_q.empty():
-            try:
-                msg = progress_q.get_nowait()
-                log_lines.append(msg["message"])
-            except queue.Empty:
-                break
+# -----------------------------------------------------------------------
+# Polling loop: each st.rerun() call is a short Streamlit cycle that keeps
+# the WebSocket connection alive — no more 150s timeout on HuggingFace.
+# -----------------------------------------------------------------------
+if st.session_state.get("_solver_running"):
+    solver_thread  = st.session_state["_solver_thread"]
+    result_holder  = st.session_state["_solver_result_holder"]
+    progress_q     = st.session_state["_solver_progress_q"]
+    start_t        = st.session_state["_solver_start_t"]
+    log_lines      = st.session_state["_solver_log_lines"]
+    time_limit_ss  = st.session_state["_solver_time_limit"]
+    _sem           = st.session_state["_solver_semester"]
 
-        if log_lines:
-            log_container.code("\n".join(log_lines[-15:]), language=None)
+    elapsed = int(time.time() - start_t)
+    pct     = min(elapsed / max(time_limit_ss, 1), 0.99)
 
-        time.sleep(0.4)
+    progress_bar  = st.progress(pct, text=f"Solving... ({elapsed}s elapsed)")
+    log_container = st.empty()
 
-    solver_thread.join()
-    elapsed_final = int(time.time() - start_t)
-    progress_bar.progress(1.0, text=f"Finished in {elapsed_final}s!")
-
-    if "error" in result_holder:
-        st.error(f"Solver crashed: {result_holder['error']}")
-        st.code(result_holder["traceback"])
-        st.stop()
-
-    result = result_holder["result"]
-    st.session_state["solver_result"] = result
-
-    # Auto-save to MongoDB (#7)
-    if result.get("status") in ("OPTIMAL", "FEASIBLE"):
+    # Drain any new log messages from the queue
+    while not progress_q.empty():
         try:
-            save_timetable_result(semester.lower(), result)
-        except Exception:
-            pass   # Don't fail the page if save fails
+            msg = progress_q.get_nowait()
+            log_lines.append(msg["message"])
+        except queue.Empty:
+            break
+    st.session_state["_solver_log_lines"] = log_lines
+
+    if log_lines:
+        log_container.code("\n".join(log_lines[-15:]), language=None)
+
+    if result_holder.get("done") or not solver_thread.is_alive():
+        # Solver finished — clean up and process result
+        solver_thread.join(timeout=2)
+        elapsed_final = int(time.time() - start_t)
+        progress_bar.progress(1.0, text=f"Finished in {elapsed_final}s!")
+
+        # Clear running state
+        for k in ["_solver_running", "_solver_thread", "_solver_result_holder",
+                  "_solver_progress_q", "_solver_start_t", "_solver_log_lines",
+                  "_solver_time_limit", "_solver_semester"]:
+            st.session_state.pop(k, None)
+
+        if "error" in result_holder:
+            st.error(f"Solver crashed: {result_holder['error']}")
+            st.code(result_holder["traceback"])
+            st.stop()
+
+        result = result_holder["result"]
+        st.session_state["solver_result"] = result
+
+        # Auto-save to MongoDB (#7)
+        if result.get("status") in ("OPTIMAL", "FEASIBLE"):
+            try:
+                save_timetable_result(_sem, result)
+            except Exception:
+                pass   # Don't fail the page if save fails
+
+        st.rerun()  # Final rerun to display results cleanly
+    else:
+        # Still running — sleep briefly then rerun to poll again
+        time.sleep(1.5)
+        st.rerun()
 
 # ===========================================================================
 # RESULTS DISPLAY
