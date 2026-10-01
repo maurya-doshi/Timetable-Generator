@@ -73,6 +73,7 @@ def save_timetable_result(semester: str, result: dict) -> str:
         "stats": result.get("stats", {}),
         "timetables": result.get("timetables", {}),
         "faculty_timetables": result.get("faculty_timetables", {}),
+        "lab_timetables": result.get("lab_timetables", {}),
         "workload": result.get("workload", {}),
     }
     inserted = db["timetables"].insert_one(doc)
@@ -87,7 +88,7 @@ def list_timetable_results(semester: str) -> list:
     db = get_db()
     cursor = db["timetables"].find(
         {"semester": semester},
-        {"timetables": 0, "faculty_timetables": 0, "workload": 0},
+        {"timetables": 0, "faculty_timetables": 0, "lab_timetables": 0, "workload": 0},
         sort=[("generated_at", DESCENDING)],
         limit=20,
     )

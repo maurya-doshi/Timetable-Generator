@@ -105,15 +105,15 @@ SLOTS = [
 # Cached export helpers
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
-def _cached_pdf(timetables_dict, fac_tt_dict, semester="", academic_year=""):
+def _cached_pdf(timetables_dict, fac_tt_dict, lab_tt_dict, semester="", academic_year=""):
     from engine.pdf_export import create_timetables_pdf
-    return create_timetables_pdf(timetables_dict, fac_tt_dict, semester=semester, academic_year=academic_year)
+    return create_timetables_pdf(timetables_dict, fac_tt_dict, lab_tt_dict, semester=semester, academic_year=academic_year)
 
 
 @st.cache_data(show_spinner=False)
-def _cached_excel(timetables_dict, fac_tt_dict, academic_year=""):
+def _cached_excel(timetables_dict, fac_tt_dict, lab_tt_dict, academic_year=""):
     from engine.excel_export import create_timetables_excel
-    return create_timetables_excel(timetables_dict, fac_tt_dict, academic_year)
+    return create_timetables_excel(timetables_dict, fac_tt_dict, lab_tt_dict, academic_year)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +124,9 @@ def _style_sec(v):
 
 def _style_fac(v):
     return "background-color:#e3f2fd;color:black;" if v else "background-color:#f5f5f5;color:black;"
+
+def _style_lab(v):
+    return "background-color:#fff3e0;color:black;" if v else "background-color:#f5f5f5;color:black;"
 
 def _pad_grid(grid):
     padded = []
@@ -473,6 +476,7 @@ if hints:
 
 timetables = result.get("timetables", {})
 fac_tt     = result.get("faculty_timetables", {})
+lab_tt     = result.get("lab_timetables", {})
 workload   = result.get("workload", {})
 
 if not timetables:
@@ -509,11 +513,12 @@ if workload:
 st.divider()
 
 # ===========================================================================
-# TIMETABLE TABS (#4 — All Sections / All Faculty)
+# TIMETABLE TABS (#4 — All Sections / All Faculty / All Labs)
 # ===========================================================================
-tab_sec, tab_all_sec, tab_fac, tab_all_fac = st.tabs([
+tab_sec, tab_all_sec, tab_fac, tab_all_fac, tab_lab, tab_all_lab = st.tabs([
     "👤 Single Section", "📋 All Sections",
     "👩‍🏫 Single Faculty", "👩‍🏫 All Faculty",
+    "🔬 Single Lab", "🔬 All Labs",
 ])
 
 # ---- Single Section ----
@@ -553,6 +558,34 @@ with tab_all_fac:
             grid = _pad_grid(fac_tt[fac])
             df   = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
             st.dataframe(df.style.map(_style_fac), use_container_width=True, height=230)
+
+# ---- Single Lab ----
+with tab_lab:
+    if not lab_tt:
+        st.info("No lab timetables generated.")
+    else:
+        selected_lab = st.selectbox("Select Lab to View", sorted(lab_tt.keys()), key="sel_lab")
+        if selected_lab:
+            grid = _pad_grid(lab_tt[selected_lab])
+            df   = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
+            st.dataframe(df.style.map(_style_lab), use_container_width=True, height=250)
+
+# ---- All Labs ----
+with tab_all_lab:
+    if not lab_tt:
+        st.info("No lab timetables generated.")
+    else:
+        st.markdown("*All lab timetables — scroll down to see all.*")
+        lab_cols = st.columns(2)
+        for i, lab in enumerate(sorted(lab_tt.keys())):
+            has_content = any(cell for row in lab_tt[lab] for cell in row)
+            if not has_content:
+                continue
+            with lab_cols[i % 2]:
+                st.subheader(lab)
+                grid = _pad_grid(lab_tt[lab])
+                df   = pd.DataFrame(grid, index=DAYS, columns=SLOTS)
+                st.dataframe(df.style.map(_style_lab), use_container_width=True, height=230)
 
 st.divider()
 
@@ -604,7 +637,7 @@ col_pdf, col_excel, col_clear = st.columns(3)
 
 with col_pdf:
     try:
-        pdf_bytes = _cached_pdf(timetables, fac_tt, semester=semester, academic_year=_acad_year)
+        pdf_bytes = _cached_pdf(timetables, fac_tt, lab_tt, semester=semester, academic_year=_acad_year)
         st.download_button(
             label="📄 Export to PDF",
             data=pdf_bytes,
@@ -618,7 +651,7 @@ with col_pdf:
 
 with col_excel:
     try:
-        xlsx_bytes = _cached_excel(timetables, fac_tt, _acad_year)
+        xlsx_bytes = _cached_excel(timetables, fac_tt, lab_tt, _acad_year)
         st.download_button(
             label="📊 Export to Excel",
             data=xlsx_bytes,

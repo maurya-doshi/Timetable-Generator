@@ -609,6 +609,9 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
         if solver.Value(var) == 1:
             co_fac_assigned[(sec, cc, d, t)].append(fac_name)
 
+    # --- Lab timetables ---
+    lab_tt = {room: [["" for _ in range(NUM_SLOTS)] for _ in range(NUM_DAYS)] for room in LAB_ROOMS}
+
     # --- Section timetables ---
     section_tt = {}
     for sec in section_courses:
@@ -640,6 +643,16 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
                             room_suffix = f"\n{room_name}" if room_name else ""
                             grid[d][t]     = f"{cc}\n({name})\n[{short}]{block_fac_suffix}{room_suffix}"
                             grid[d][t + 1] = f"{cc}\n({name})\n[{short}]{block_fac_suffix}{room_suffix}"
+
+                            # Populate lab timetable if a valid room was assigned
+                            if room_name and room_name in lab_tt:
+                                lab_label = f"{sec}\n{cc}\n({name})"
+                                if fac_label:
+                                    lab_label += f"\nMain: {fac_label}"
+                                if cofacs:
+                                    lab_label += f"\nCo: {cofac_str}"
+                                lab_tt[room_name][d][t] = lab_label
+                                lab_tt[room_name][d][t + 1] = lab_label
         section_tt[sec] = grid
 
     # --- Faculty timetables ---
@@ -724,7 +737,7 @@ def _extract_solution(solver, x1, x2, co_fac, lab_room, section_courses,
             "pct":         pct,
         }
 
-    return section_tt, faculty_tt, workload
+    return section_tt, faculty_tt, lab_tt, workload
 
 
 # -----------------------------------------------------------------------
@@ -854,6 +867,7 @@ def build_and_solve(
         "status":               "UNKNOWN",
         "timetables":           {},
         "faculty_timetables":   {},
+        "lab_timetables":       {},
         "workload":             {},
         "stats":                {},
         "errors":               [],
@@ -1079,7 +1093,7 @@ def build_and_solve(
             x1, x2, solver, section_courses, course_info,
             _blocked, mappings.get("subject_lab_prefs")
         )
-        result["timetables"], result["faculty_timetables"], result["workload"] = (
+        result["timetables"], result["faculty_timetables"], result["lab_timetables"], result["workload"] = (
             _extract_solution(solver, x1, x2, co_fac, assigned_lab_rooms, section_courses,
                               course_info, faculty_assignments,
                               mappings["faculty_designations"], semester,

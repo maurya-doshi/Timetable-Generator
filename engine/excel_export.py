@@ -28,6 +28,7 @@ SLOTS = [
 # Fills
 _SEC_HEADER_FILL  = PatternFill("solid", fgColor="37474F")   # dark blue-grey
 _FAC_HEADER_FILL  = PatternFill("solid", fgColor="1565C0")   # dark blue
+_LAB_HEADER_FILL  = PatternFill("solid", fgColor="E65100")   # dark orange
 _DAY_FILL         = PatternFill("solid", fgColor="546E7A")   # medium blue-grey
 _LECTURE_FILL     = PatternFill("solid", fgColor="E8F5E9")   # light green
 _TUTORIAL_FILL    = PatternFill("solid", fgColor="E3F2FD")   # light blue
@@ -146,6 +147,7 @@ def _write_grid(ws, title: str, grid: list, header_fill: PatternFill):
 def create_timetables_excel(
     section_timetables: dict,
     faculty_timetables: dict | None = None,
+    lab_timetables: dict | None = None,
     academic_year: str = "",
 ) -> bytes:
     """Generate a colour-coded Excel workbook and return it as bytes.
@@ -156,6 +158,8 @@ def create_timetables_excel(
         {section_name: 5x8 grid of cell strings}
     faculty_timetables : dict, optional
         {faculty_name: 5x8 grid of cell strings}
+    lab_timetables : dict, optional
+        {lab_name: 5x8 grid of cell strings}
     academic_year : str, optional
         Appended to sheet titles, e.g. "2025-26".
 
@@ -191,6 +195,21 @@ def create_timetables_excel(
                 title=f"Faculty Timetable - {fac}{year_suffix}",
                 grid=faculty_timetables[fac],
                 header_fill=_FAC_HEADER_FILL,
+            )
+
+    # --- Lab sheets ---
+    if lab_timetables:
+        for lab in sorted(lab_timetables.keys()):
+            has_content = any(cell for row in lab_timetables[lab] for cell in row)
+            if not has_content:
+                continue
+            sheet_name = f"Lab {lab}"[:31]
+            ws = wb.create_sheet(title=sheet_name)
+            _write_grid(
+                ws,
+                title=f"Lab Timetable - {lab}{year_suffix}",
+                grid=lab_timetables[lab],
+                header_fill=_LAB_HEADER_FILL,
             )
 
     buf = io.BytesIO()

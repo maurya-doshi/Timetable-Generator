@@ -32,6 +32,7 @@ def _cell_colour(raw: str, row_idx: int) -> colors.Color:
 def create_timetables_pdf(
     section_timetables,
     faculty_timetables=None,
+    lab_timetables=None,
     semester: str = "",
     academic_year: str = "",
 ):
@@ -174,6 +175,19 @@ def create_timetables_pdf(
             elements.append(Paragraph(f"{fac}  |  {meta_str}", subtitle_style))
             elements.append(Spacer(1, 8))
             elements.append(build_table(faculty_timetables[fac], colors.HexColor("#1565C0")))
+            elements.append(PageBreak())
+
+    # --- Lab timetables ---
+    if lab_timetables:
+        for lab in sorted(lab_timetables.keys()):
+            # Only print labs that actually have something scheduled
+            has_content = any(cell for row in lab_timetables[lab] for cell in row)
+            if not has_content:
+                continue
+            elements.append(Paragraph(f"Lab Timetable: {lab}", title_style))
+            elements.append(Paragraph(meta_str, subtitle_style))
+            elements.append(Spacer(1, 8))
+            elements.append(build_table(lab_timetables[lab], colors.HexColor("#E65100")))
             elements.append(PageBreak())
 
     # --- Legend ---
