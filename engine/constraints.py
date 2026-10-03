@@ -360,7 +360,7 @@ def add_morning_first(model, section_courses, slot_coverage_sec):
 # ===================================================================
 # H4.6 — No empty days (every day must have at least one class)
 # ===================================================================
-def add_no_empty_days(model, section_courses, event_vars_sec, penalty_weight=500):
+def add_no_empty_days(model, section_courses, event_vars_sec):
     """
     SOFT constraint: every section should have at least one teaching event
     each day. Violations incur a high penalty in the objective.
@@ -379,7 +379,7 @@ def add_no_empty_days(model, section_courses, event_vars_sec, penalty_weight=500
                 is_empty = model.NewBoolVar(f"empty_day_{sec}_d{d}")
                 model.Add(sum(terms) >= 1).OnlyEnforceIf(is_empty.Not())
                 model.Add(sum(terms) == 0).OnlyEnforceIf(is_empty)
-                penalties.append(penalty_weight * is_empty)
+                penalties.append(500 * is_empty)
     return penalties
 
 
@@ -864,14 +864,7 @@ def add_subject_lab_preferences(model, lab_room, course_info, subject_lab_prefs=
 
     # Normalize subject_lab_prefs into a list of (keyword_upper, preferred_room)
     rules = []
-    if isinstance(subject_lab_prefs, dict):
-        for room, kws in subject_lab_prefs.items():
-            if isinstance(kws, list):
-                for kw in kws:
-                    rules.append((str(kw).strip().upper(), room))
-            elif isinstance(kws, str):
-                rules.append((kws.strip().upper(), room))
-    elif isinstance(subject_lab_prefs, list):
+    if isinstance(subject_lab_prefs, list):
         for entry in subject_lab_prefs:
             if isinstance(entry, dict):
                 kw = entry.get("Keyword") or entry.get("keyword") or entry.get("Subject") or entry.get("subject")

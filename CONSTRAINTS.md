@@ -134,3 +134,34 @@ If room contention requires placing a subject in a non-preferred CSE Lab, a soft
 - The solver declares a solution OPTIMAL when the gap between the best found solution
   and the proven lower bound is within 5% (relative) or 30 penalty points (absolute).
 
+
+## Additional Constraints (Appended from constraints.txt)
+
+The following constraints are specified in the requirements but were missing from the main constraint documentation:
+
+### A1 — PG Professional Electives (PEs) Concurrency
+All 3 Professional Elective courses must be scheduled at the exact same time slot for SP-1 and SP-2. The faculty and rooms are different, but the timing is perfectly synchronized.
+
+### A2 — PG Labs & Tutorials Concurrency
+All Labs and Tutorials must be scheduled at the exact same time slot for SP-1 and SP-2. The faculty and rooms are different, but the timing is synchronized.
+
+### A3 — Open Elective Time Slot Preferences
+The 5th hour on Monday should be the Open Elective for 5th, 6th, and 7th semester students. Additionally, open electives for the 5th semester should generally be scheduled after lunch.
+
+### A4 — EVS Subject Slot (5th Semester)
+On Monday, the last hour for the 5th semester should be the EVS subject.
+
+### A5 — Faculty Morning Session Preference
+Each faculty must have at least one morning session scheduled (this is treated as a soft constraint or strong preference).
+
+### A6 — Industry Faculty Sharing (PG)
+An industry faculty member visits on Thursday or Friday to take a PG class. The workload for that subject is shared half-and-half with a college faculty member (e.g., for a 3:0:1 subject, 2 L units are handled by the industry faculty, and the remaining by the college faculty).
+
+### A7 — Faculty Workload Variations by Semester
+Faculty workload caps differ between Odd and Even semesters:
+- **Odd Semester:** Professor (18 units), Associate (24 units), Assistant (28 units)
+- **Even Semester:** Professor (14 units), Associate (18 units), Assistant (24 units)
+
+### A8 — Undergraduate Section Structure
+- **Odd Semester (11 sections):** 3rd (4 sections), 5th (4 sections), 7th (3 sections)
+- **Even Semester (8 sections):** 4th (4 sections), 6th (4 sections), 8th (No classes)

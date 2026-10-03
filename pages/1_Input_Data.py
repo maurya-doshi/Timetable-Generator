@@ -51,10 +51,9 @@ def find_header_row(ws):
 
 def parse_faculty_sheet(ws):
     """Parse the Faculty_Assignments sheet (two‑row header)."""
-    debug = {}
     header_row = find_header_row(ws)
     if header_row is None:
-        return None, debug, "Faculty_Assignments: Could not find header row."
+        return None, "Faculty_Assignments: Could not find header row."
 
     sub_header_row = header_row + 1
     sub_header = [cell.value for cell in ws[sub_header_row]]
@@ -116,7 +115,7 @@ def parse_faculty_sheet(ws):
             "subjects": subjects,
             "labs": labs,
         })
-    return records, debug, None
+    return records, None
 
 def parse_courses_sheet(ws):
     """Parse the Courses sheet – robust header matching."""
@@ -196,6 +195,25 @@ def parse_courses_sheet(ws):
     
     return records, None
 
+def _render_faculty_table(records, hod_name="None"):
+    header_cols = st.columns([0.5, 2, 1.5, 3, 2])
+    header_cols[0].markdown("**Sl.**")
+    header_cols[1].markdown("**Faculty Name**")
+    header_cols[2].markdown("**Designation**")
+    header_cols[3].markdown("**Subjects (Semester)**")
+    header_cols[4].markdown("**Labs (Semester)**")
+    for rec in records:
+        cols = st.columns([0.5, 2, 1.5, 3, 2])
+        cols[0].write(rec.get("sl_no") if rec.get("sl_no") else "—")
+        is_hod = (rec.get("is_hod") or rec.get("name") == hod_name)
+        badge = " 🏛️ *(HOD)*" if (hod_name != "None" and is_hod) else ""
+        cols[1].write(f"{rec.get('name')}{badge}")
+        cols[2].write(rec.get("designation", "—"))
+        subj_str = ", ".join(f"{s['code']} ({s['semester']})" for s in rec.get("subjects", [])) if rec.get("subjects") else "—"
+        lab_str = ", ".join(f"{l['code']} ({l['semester']})" for l in rec.get("labs", [])) if rec.get("labs") else "—"
+        cols[3].write(subj_str)
+        cols[4].write(lab_str)
+
 # ---------------------------------------------------------------------------
 # File upload
 # ---------------------------------------------------------------------------
@@ -222,11 +240,9 @@ if uploaded_file is not None:
         st.error("Excel file must contain a sheet named 'Faculty_Assignments'.")
         st.stop()
     faculty_ws = wb["Faculty_Assignments"]
-    faculty_records, debug, faculty_error = parse_faculty_sheet(faculty_ws)
+    faculty_records, faculty_error = parse_faculty_sheet(faculty_ws)
     if faculty_error:
         st.error(f"Faculty_Assignments error: {faculty_error}")
-        with st.expander("Debug info"):
-            st.json(debug)
         st.stop()
 
     # 2. Check for duplicate faculty names
@@ -341,22 +357,7 @@ if uploaded_file is not None:
     st.header("📚 Faculty Assignments")
     st.subheader("Preview")
     if faculty_records:
-        header_cols = st.columns([0.5, 2, 1.5, 3, 2])
-        header_cols[0].markdown("**Sl.**")
-        header_cols[1].markdown("**Faculty Name**")
-        header_cols[2].markdown("**Designation**")
-        header_cols[3].markdown("**Subjects (Semester)**")
-        header_cols[4].markdown("**Labs (Semester)**")
-        for rec in faculty_records:
-            cols = st.columns([0.5, 2, 1.5, 3, 2])
-            cols[0].write(rec["sl_no"] if rec["sl_no"] else "—")
-            is_hod_badge = " 🏛️ *(HOD)*" if (selected_hod != "None" and rec["name"] == selected_hod) else ""
-            cols[1].write(f"{rec['name']}{is_hod_badge}")
-            cols[2].write(rec["designation"])
-            subj_str = ", ".join(f"{s['code']} ({s['semester']})" for s in rec["subjects"]) if rec["subjects"] else "—"
-            lab_str = ", ".join(f"{l['code']} ({l['semester']})" for l in rec["labs"]) if rec["labs"] else "—"
-            cols[3].write(subj_str)
-            cols[4].write(lab_str)
+        _render_faculty_table(faculty_records, selected_hod)
     else:
         st.info("No faculty records found.")
 
@@ -535,23 +536,7 @@ else:
 
         # Display existing faculty preview
         st.header("📚 Current Faculty Roster")
-        header_cols = st.columns([0.5, 2, 1.5, 3, 2])
-        header_cols[0].markdown("**Sl.**")
-        header_cols[1].markdown("**Faculty Name**")
-        header_cols[2].markdown("**Designation**")
-        header_cols[3].markdown("**Subjects (Semester)**")
-        header_cols[4].markdown("**Labs (Semester)**")
-        for rec in existing_faculty:
-            cols = st.columns([0.5, 2, 1.5, 3, 2])
-            cols[0].write(rec.get("sl_no") if rec.get("sl_no") else "—")
-            is_hod = (rec.get("is_hod") or rec.get("name") == saved_hod)
-            badge = " 🏛️ *(HOD)*" if is_hod else ""
-            cols[1].write(f"{rec.get('name')}{badge}")
-            cols[2].write(rec.get("designation", "—"))
-            subj_str = ", ".join(f"{s['code']} ({s['semester']})" for s in rec.get("subjects", [])) if rec.get("subjects") else "—"
-            lab_str = ", ".join(f"{l['code']} ({l['semester']})" for l in rec.get("labs", [])) if rec.get("labs") else "—"
-            cols[3].write(subj_str)
-            cols[4].write(lab_str)
+        _render_faculty_table(existing_faculty, saved_hod)
 
         st.divider()
         st.header("📖 Current Courses")

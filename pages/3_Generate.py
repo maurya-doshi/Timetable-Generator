@@ -129,14 +129,8 @@ def _style_lab(v):
     return "background-color:#fff3e0;color:black;" if v else "background-color:#f5f5f5;color:black;"
 
 def _pad_grid(grid):
-    padded = []
-    for row in grid:
-        if len(row) < len(SLOTS):
-            row = row + [""] * (len(SLOTS) - len(row))
-        elif len(row) > len(SLOTS):
-            row = row[:len(SLOTS)]
-        padded.append(row)
-    return padded
+    n = len(SLOTS)
+    return [(row + [""] * max(0, n - len(row)))[:n] for row in grid]
 
 def _make_diff_styles(data: pd.DataFrame, changed: pd.DataFrame) -> pd.DataFrame:
     """Return a DataFrame of CSS strings for use with style.apply(axis=None)."""

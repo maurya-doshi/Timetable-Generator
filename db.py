@@ -92,15 +92,15 @@ def list_timetable_results(semester: str) -> list:
         sort=[("generated_at", DESCENDING)],
         limit=20,
     )
-    results = []
-    for doc in cursor:
-        results.append({
+    return [
+        {
             "id": str(doc["_id"]),
             "generated_at": doc.get("generated_at"),
             "status": doc.get("status", "?"),
             "stats": doc.get("stats", {}),
-        })
-    return results
+        }
+        for doc in cursor
+    ]
 
 
 def load_timetable_result(result_id: str) -> dict | None:

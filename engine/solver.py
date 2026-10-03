@@ -194,8 +194,7 @@ def _build_mappings(course_info, faculty_raw, constraints_doc, section_map=None)
         if ug_pg == "PG":
             if sem not in ("1", "2"):
                 continue
-            _ordinal = {"1": "1st", "2": "2nd"}
-            label = f"PG {_ordinal[sem]} Sem"
+            label = f"PG {('1st', '2nd')[int(sem)-1]} Sem"
             sections = []
             is_common = (code in pg_pe_codes) or (code == pg_core_code)
             if "MCS" in code or is_common:
@@ -980,8 +979,9 @@ def build_and_solve(
     if "morning_first" not in skip:
         add_morning_first(model, section_courses, slot_coverage_sec)
 
+    empty_day_penalties = []
     if "no_empty_days" not in skip:
-        add_no_empty_days(model, section_courses, event_vars_sec)
+        empty_day_penalties = add_no_empty_days(model, section_courses, event_vars_sec)
 
     spread_penalties = []
     if "spread" not in skip:
@@ -1022,6 +1022,8 @@ def build_and_solve(
     penalties = []
     if spread_penalties:
         penalties.extend(spread_penalties)
+    if empty_day_penalties:
+        penalties.extend(empty_day_penalties)
 
     fac_taught_courses = {}
     for fac, assigns in mappings["faculty_assignments"].items():
